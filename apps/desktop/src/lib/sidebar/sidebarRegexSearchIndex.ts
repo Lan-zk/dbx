@@ -96,14 +96,13 @@ export interface SidebarSearchTransition {
  * Pick the sidebar global-search dispatch branch for a query/mode transition.
  *
  * Regex mode always short-circuits to the local index projection regardless of
- * the local-search setting; leaving regex mode restores the ordinary
- * projection without issuing a metadata refresh; the ordinary remote refresh
- * only runs when regex is off, the transition did not come from regex mode,
- * and local search is disabled.
+ * the local-search setting. Ordinary remote refresh runs whenever regex is off,
+ * a non-empty query remains, and local search is disabled, including an
+ * explicit transition out of regex mode.
  */
 export function resolveSidebarSearchDispatchMode(transition: SidebarSearchTransition, options: { localSearchEnabled: boolean }): SidebarSearchDispatchMode {
   if (transition.regexMode) return "regex";
-  if (transition.wasRegexMode) return "none";
   if (options.localSearchEnabled) return "none";
+  if (transition.wasRegexMode && !transition.query) return "none";
   return "ordinary";
 }

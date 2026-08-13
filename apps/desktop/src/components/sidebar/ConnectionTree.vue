@@ -177,8 +177,10 @@ watch(
 );
 
 watch(regexMode, (enabled) => {
-  // Re-evaluate the current value for presentation. The combined watcher
-  // below sees the mode transition and deliberately skips remote work.
+  window.clearTimeout(searchTimer);
+  searchTimer = undefined;
+  // Re-evaluate immediately so a pending ordinary-search debounce cannot
+  // overwrite a case-sensitive regular expression after the mode changes.
   deferredSearchQuery.value = enabled ? searchQuery.value.trim() : searchQuery.value.trim().toLowerCase();
 });
 
@@ -254,8 +256,6 @@ watch([deferredSearchQuery, regexMode], ([newQuery, isRegexMode], [oldQuery, was
     return;
   }
   if (dispatchMode === "none") {
-    // Switching regex off restores the ordinary projection but must not issue
-    // a metadata refresh merely because the mode changed.
     if (!wasRegexMode && !newQuery && oldQuery) searchRefreshedNodeIds.clear();
     return;
   }

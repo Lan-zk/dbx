@@ -28,14 +28,16 @@ test("regex mode always dispatches to the local index read regardless of the loc
   assert.equal(resolveSidebarSearchDispatchMode({ query: "", regexMode: true, wasRegexMode: true }, { localSearchEnabled: true }), "regex");
 });
 
-test("leaving regex mode never issues the ordinary remote refresh", () => {
-  assert.equal(resolveSidebarSearchDispatchMode({ query: "orders", regexMode: false, wasRegexMode: true }, { localSearchEnabled: false }), "none");
+test("leaving regex mode restores the configured ordinary search behavior", () => {
+  assert.equal(resolveSidebarSearchDispatchMode({ query: "orders", regexMode: false, wasRegexMode: true }, { localSearchEnabled: false }), "ordinary");
   assert.equal(resolveSidebarSearchDispatchMode({ query: "orders", regexMode: false, wasRegexMode: true }, { localSearchEnabled: true }), "none");
+  assert.equal(resolveSidebarSearchDispatchMode({ query: "", regexMode: false, wasRegexMode: true }, { localSearchEnabled: false }), "none");
 });
 
 test("local search on keeps ordinary queries local and local search off enables the remote refresh", () => {
   assert.equal(resolveSidebarSearchDispatchMode({ query: "orders", regexMode: false, wasRegexMode: false }, { localSearchEnabled: true }), "none");
   assert.equal(resolveSidebarSearchDispatchMode({ query: "orders", regexMode: false, wasRegexMode: false }, { localSearchEnabled: false }), "ordinary");
+  assert.equal(resolveSidebarSearchDispatchMode({ query: "", regexMode: false, wasRegexMode: false }, { localSearchEnabled: false }), "ordinary");
 });
 
 test("collects manifest scopes and live-tree backfill scopes through the read-only reader", async () => {

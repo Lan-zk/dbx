@@ -6,13 +6,19 @@ import type { ConnectionConfig, TreeNode } from "../../apps/desktop/src/types/da
 
 const MANIFEST_CACHE_KEY = "dbx:sidebar-table-search-index-manifest-v1";
 
-const { loadSchemaCacheMock, saveSchemaCacheMock, listTablesMock, checkConnectionHealthMock, persistedCache } = vi.hoisted(() => {
+const { loadSchemaCacheMock, saveSchemaCacheMock, deleteSchemaCachePrefixMock, saveConnectionsMock, listTablesMock, checkConnectionHealthMock, persistedCache } = vi.hoisted(() => {
   const persisted = new Map<string, unknown>();
   return {
     loadSchemaCacheMock: vi.fn(async (cacheKey: string) => persisted.get(cacheKey) ?? null),
     saveSchemaCacheMock: vi.fn(async (cacheKey: string, payload: unknown) => {
       persisted.set(cacheKey, payload);
     }),
+    deleteSchemaCachePrefixMock: vi.fn(async (prefix: string) => {
+      for (const cacheKey of persisted.keys()) {
+        if (cacheKey === prefix || cacheKey.startsWith(prefix)) persisted.delete(cacheKey);
+      }
+    }),
+    saveConnectionsMock: vi.fn(async () => undefined),
     listTablesMock: vi.fn(),
     checkConnectionHealthMock: vi.fn(async () => undefined),
     persistedCache: persisted,
@@ -25,6 +31,8 @@ vi.mock("../../apps/desktop/src/lib/backend/api", async (importOriginal) => {
     ...actual,
     loadSchemaCache: loadSchemaCacheMock,
     saveSchemaCache: saveSchemaCacheMock,
+    deleteSchemaCachePrefix: deleteSchemaCachePrefixMock,
+    saveConnections: saveConnectionsMock,
     listTables: listTablesMock,
     checkConnectionHealth: checkConnectionHealthMock,
   };
@@ -35,6 +43,8 @@ import { useConnectionStore } from "../../apps/desktop/src/stores/connectionStor
 beforeEach(() => {
   loadSchemaCacheMock.mockReset();
   saveSchemaCacheMock.mockReset();
+  deleteSchemaCachePrefixMock.mockReset();
+  saveConnectionsMock.mockReset();
   listTablesMock.mockReset();
   checkConnectionHealthMock.mockReset();
   persistedCache.clear();
@@ -42,6 +52,12 @@ beforeEach(() => {
   saveSchemaCacheMock.mockImplementation(async (cacheKey: string, payload: unknown) => {
     persistedCache.set(cacheKey, payload);
   });
+  deleteSchemaCachePrefixMock.mockImplementation(async (prefix: string) => {
+    for (const cacheKey of persistedCache.keys()) {
+      if (cacheKey === prefix || cacheKey.startsWith(prefix)) persistedCache.delete(cacheKey);
+    }
+  });
+  saveConnectionsMock.mockResolvedValue(undefined);
 });
 
 function installMemoryStorage() {
@@ -438,6 +454,48 @@ test("refreshSidebarTableSearchIndex is the only path that paginates listTables"
     const scopes = await store.loadSidebarTableSearchIndexScopes();
     assert.equal(scopes.length, 1);
     assert.equal(scopes[0]?.entries.length, 501);
+  } finally {
+    restoreStorage();
+  }
+});
+
+test("updating a connection invalidates its in-memory index and manifest scopes", async () => {
+  const restoreStorage = installMemoryStorage();
+  try {
+    setActivePinia(createPinia());
+    const store = useConnectionStore();
+    store.addEphemeralConnection(conn("conn-1"));
+    store.treeNodes.push(connectionNodeWithDatabases("app"));
+    let indexName = "old_orders";
+    loadSchemaCacheMock.mockImplementation(async (cacheKey: string) => {
+      if (cacheKey === MANIFEST_CACHE_KEY) return persistedCache.get(cacheKey) ?? null;
+      return indexEnvelope([{ name: indexName, tableType: "TABLE" }]);
+    });
+
+    const initialEntries = await store.loadSidebarTableSearchIndex("conn-1:app");
+    assert.deepEqual(
+      initialEntries?.map((entry) => entry.name),
+      ["old_orders"],
+    );
+
+    await store.updateConnection({ ...conn("conn-1"), host: "replacement.example.com" });
+
+    assert.deepEqual(await store.loadSidebarTableSearchIndexScopes(), []);
+    const manifestSavesAfterUpdate = saveSchemaCacheMock.mock.calls.filter(([key]) => key === MANIFEST_CACHE_KEY);
+    const clearedManifest = manifestSavesAfterUpdate.at(-1)?.[1] as { scopes: unknown[] };
+    assert.deepEqual(clearedManifest?.scopes, []);
+    store.treeNodes = [connectionNodeWithDatabases("app")];
+    indexName = "new_orders";
+    const refreshedEntries = await store.loadSidebarTableSearchIndex("conn-1:app");
+    assert.deepEqual(
+      refreshedEntries?.map((entry) => entry.name),
+      ["new_orders"],
+    );
+    const manifestSaves = saveSchemaCacheMock.mock.calls.filter(([key]) => key === MANIFEST_CACHE_KEY);
+    const lastPayload = manifestSaves.at(-1)?.[1] as { scopes: unknown[] };
+    assert.equal(lastPayload?.scopes.length, 1);
+    assert.equal(listTablesMock.mock.calls.length, 0);
+    assert.equal(checkConnectionHealthMock.mock.calls.length, 0);
   } finally {
     restoreStorage();
   }
