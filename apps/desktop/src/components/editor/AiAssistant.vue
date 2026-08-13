@@ -92,7 +92,7 @@ import { visibleToActualIndex } from "@/lib/ai/aiMessageEdit";
 import { shouldShowReasoningCharCount, reasoningCharCountClass } from "@/lib/ai/aiReasoningPresentation";
 import { saveTextFile } from "@/lib/export/saveTextFile";
 import { buildAiAnalysisExport } from "@/lib/export/aiAnalysisExport";
-import { filterAiConversations } from "@/lib/ai/aiConversationSearch";
+import { buildAiConversationSearchIndex, filterAiConversationSearchIndex } from "@/lib/ai/aiConversationSearch";
 
 const { t } = useI18n();
 const settings = useSettingsStore();
@@ -181,7 +181,8 @@ const conversationId = ref("");
 const conversations = ref<AiConversation[]>([]);
 const conversationSearchQuery = ref("");
 const conversationSearchInput = ref<HTMLInputElement | null>(null);
-const filteredConversations = computed(() => filterAiConversations(conversations.value, conversationSearchQuery.value));
+const conversationSearchIndex = computed(() => buildAiConversationSearchIndex(conversations.value));
+const filteredConversations = computed(() => filterAiConversationSearchIndex(conversationSearchIndex.value, conversationSearchQuery.value));
 const showConversationList = ref(false);
 const showTemplateSelector = ref(false);
 const modeActionOpen = ref(false);
