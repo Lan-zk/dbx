@@ -65,11 +65,11 @@ AI 助手 → DBX MCP → 你的数据库 → 返回结果
 | Cursor | `.cursor/mcp.json` |
 | Windsurf | MCP 配置 |
 | VS Code + Copilot | MCP 扩展/配置 |
-| DeepSeek Harness | `~/.dsh/profiles/<profile>/cordis.patch.yml` |
+| DeepSeek Harness | `$DSH_HOME/profiles/<profile>/cordis.patch.yml` |
 
 ### DeepSeek Harness
 
-DeepSeek Harness 通过 Cordis 插件条目加载 MCP Server，不读取 `mcpServers` JSON。安装 `@dbx-app/mcp-server` 后，为 `web` profile 将以下条目合并到 `~/.dsh/profiles/web/cordis.patch.yml`：
+DeepSeek Harness 通过 Cordis 插件条目加载 MCP Server，不读取 `mcpServers` JSON。安装 `@dbx-app/mcp-server` 后，为 `web` profile 将以下条目合并到 `$DSH_HOME/profiles/web/cordis.patch.yml`：未设置 `DSH_HOME` 时默认为 `~/.dsh`。
 
 ```yaml
 - insert:

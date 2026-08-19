@@ -65,11 +65,11 @@ AI agent → DBX MCP → your database → results
 | Cursor | `.cursor/mcp.json` |
 | Windsurf | MCP configuration |
 | VS Code + Copilot | MCP extension/configuration |
-| DeepSeek Harness | `~/.dsh/profiles/<profile>/cordis.patch.yml` |
+| DeepSeek Harness | `$DSH_HOME/profiles/<profile>/cordis.patch.yml` |
 
 ### DeepSeek Harness
 
-DeepSeek Harness loads MCP servers through Cordis plugin entries instead of an `mcpServers` JSON object. After installing `@dbx-app/mcp-server`, merge the following entry into `~/.dsh/profiles/web/cordis.patch.yml` for the `web` profile:
+DeepSeek Harness loads MCP servers through Cordis plugin entries instead of an `mcpServers` JSON object. After installing `@dbx-app/mcp-server`, merge the following entry into `$DSH_HOME/profiles/web/cordis.patch.yml` for the `web` profile: If `DSH_HOME` is unset, it defaults to `~/.dsh`.
 
 ```yaml
 - insert:
