@@ -445,12 +445,22 @@ pub async fn find_documents_core(
         PoolKind::Elasticsearch(client) => {
             let client = client.clone();
             drop(connections);
-            elasticsearch_driver::find_documents(&client, collection, skip, limit, filter, sort).await
+            if let Some(cursor) = cursor {
+                elasticsearch_driver::find_documents_with_cursor(&client, collection, limit, filter, sort, Some(cursor))
+                    .await
+            } else {
+                elasticsearch_driver::find_documents(&client, collection, skip, limit, filter, sort).await
+            }
         }
         PoolKind::Easysearch(client) => {
             let client = client.clone();
             drop(connections);
-            easysearch_driver::find_documents(&client, collection, skip, limit, filter, sort).await
+            if let Some(cursor) = cursor {
+                easysearch_driver::find_documents_with_cursor(&client, collection, limit, filter, sort, Some(cursor))
+                    .await
+            } else {
+                easysearch_driver::find_documents(&client, collection, skip, limit, filter, sort).await
+            }
         }
         PoolKind::Meilisearch(client) => {
             let client = client.clone();
