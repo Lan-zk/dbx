@@ -902,7 +902,7 @@ fn should_use_search_cursor(body: &serde_json::Value, has_offset: bool, cursor: 
     if !has_offset {
         return false;
     }
-    body.get("from").and_then(serde_json::Value::as_u64).map_or(true, |from| from == 0)
+    body.get("from").and_then(serde_json::Value::as_u64).is_none_or(|from| from == 0)
 }
 
 /// Ensure a `_search` body has a stable `_shard_doc` tiebreaker for PIT +
