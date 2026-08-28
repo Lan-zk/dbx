@@ -654,6 +654,8 @@ fn push_mapping_column(
 
 #[derive(Deserialize)]
 struct SearchResponse {
+    #[serde(default)]
+    pit_id: Option<String>,
     hits: SearchHits,
     #[serde(rename = "_shards")]
     shards: Option<ElasticsearchShards>,
@@ -761,6 +763,8 @@ enum EsSearchCursor {
     },
     Sql {
         cursor: String,
+        columns_key: String,
+        columns: Vec<serde_json::Value>,
     },
 }
 
@@ -821,7 +825,7 @@ async fn open_es_pit(client: &EsClient, index: &str, keep_alive: &str) -> Result
 async fn close_es_pit(client: &EsClient, pit_id: &str) -> Result<(), String> {
     let resp = client
         .delete("/_pit")
-        .json(&serde_json::json!({ "pit_id": pit_id }))
+        .json(&serde_json::json!({ "id": pit_id }))
         .send()
         .await
         .map_err(|e| format!("Elasticsearch request failed: {e}"))?;
@@ -834,7 +838,7 @@ async fn close_es_pit(client: &EsClient, pit_id: &str) -> Result<(), String> {
 
 async fn close_es_sql_cursor(client: &EsClient, cursor: &str) -> Result<(), String> {
     let resp = client
-        .delete("/_sql")
+        .post("/_sql/close")
         .json(&serde_json::json!({ "cursor": cursor }))
         .send()
         .await
@@ -857,7 +861,7 @@ pub async fn close_cursor(client: &EsClient, cursor: &str) -> Result<(), String>
     if let Ok(search_cursor) = decode_es_search_cursor(cursor) {
         return match search_cursor {
             EsSearchCursor::Pit { pit_id, .. } => close_es_pit(client, &pit_id).await,
-            EsSearchCursor::Sql { cursor } => close_es_sql_cursor(client, &cursor).await,
+            EsSearchCursor::Sql { cursor, .. } => close_es_sql_cursor(client, &cursor).await,
         };
     }
     close_es_sql_cursor(client, cursor).await
@@ -1004,8 +1008,8 @@ pub async fn find_documents_with_cursor(
             return Err(error);
         }
     };
-    let path = elasticsearch_index_path(index, "_search");
-    let resp = client.post(&path).json(&body).send().await.map_err(|e| format!("Elasticsearch request failed: {e}"))?;
+    let resp =
+        client.post("/_search").json(&body).send().await.map_err(|e| format!("Elasticsearch request failed: {e}"))?;
 
     if !client.response_status(&resp).is_success() {
         if cursor.is_none() {
@@ -1016,11 +1020,12 @@ pub async fn find_documents_with_cursor(
     }
 
     let result: SearchResponse = resp.json().await.map_err(|e| format!("Elasticsearch parse error: {e}"))?;
+    let response_pit_id = result.pit_id.clone().unwrap_or(pit_id);
     let last_sort = result.hits.hits.last().and_then(|hit| hit.sort.clone());
     let next_cursor = if result.hits.hits.len() == size && last_sort.is_some() {
         let next = EsDocumentCursor {
             kind: EsCursorKind::Pit,
-            pit_id: pit_id.clone(),
+            pit_id: response_pit_id.clone(),
             index: index.to_string(),
             search_after: last_sort.unwrap_or_default(),
             sort_spec,
@@ -1034,7 +1039,7 @@ pub async fn find_documents_with_cursor(
         // The first page has no previous page to return to, so close the PIT
         // when it is already exhausted instead of holding it open.
         if cursor.is_none() {
-            let _ = close_es_pit(client, &pit_id).await;
+            let _ = close_es_pit(client, &response_pit_id).await;
         }
         None
     };
@@ -1043,7 +1048,7 @@ pub async fn find_documents_with_cursor(
         Ok(result) => result,
         Err(error) => {
             if cursor.is_none() {
-                let _ = close_es_pit(client, &pit_id).await;
+                let _ = close_es_pit(client, &response_pit_id).await;
             }
             return Err(error);
         }
@@ -1773,7 +1778,7 @@ async fn execute_search_query(
             EsSearchCursor::Pit { pit_id, index, search_after, body, size, .. } => {
                 (pit_id, Some(search_after), body, size, index)
             }
-            EsSearchCursor::Sql { cursor } => {
+            EsSearchCursor::Sql { cursor, .. } => {
                 let _ = close_es_sql_cursor(client, &cursor).await;
                 return Err("Elasticsearch SQL cursor cannot be used to continue a _search query".to_string());
             }
@@ -1814,11 +1819,9 @@ async fn execute_search_query(
                 as usize;
         (pit_id, None, base_body, size, query.index.clone())
     };
-    if let Some(cursor) = cursor {
-        if index != query.index {
-            let _ = close_es_pit(client, &pit_id).await;
-            return Err("Elasticsearch cursor was created for a different index".to_string());
-        }
+    if cursor.is_some() && index != query.index {
+        let _ = close_es_pit(client, &pit_id).await;
+        return Err("Elasticsearch cursor was created for a different index".to_string());
     }
 
     let mut request_body = base_body.clone();
@@ -1830,9 +1833,8 @@ async fn execute_search_query(
         }
     }
 
-    let path = elasticsearch_index_path(&index, "_search");
     let resp = client
-        .post(&path)
+        .post("/_search")
         .json(&request_body)
         .send()
         .await
@@ -1847,27 +1849,34 @@ async fn execute_search_query(
     }
 
     let body: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::Value::Null);
+    let response_pit_id = body.get("pit_id").and_then(serde_json::Value::as_str).map(str::to_string).unwrap_or(pit_id);
     // Capture the index's true match total before the body is consumed by the
     // parser — needed below when we report total instead of rows.len().
     let index_total = body.pointer("/hits/total/value").and_then(|v| v.as_u64());
     let hits = body.pointer("/hits/hits").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
     let last_sort = hits.last().and_then(|hit| hit.get("sort").and_then(serde_json::Value::as_array).cloned());
 
-    let next_cursor = if use_cursor && hits.len() == size && last_sort.is_some() {
-        let next = EsSearchCursor::Pit {
-            pit_id: pit_id.clone(),
+    let has_next_page = use_cursor && hits.len() == size && last_sort.is_some();
+    let active_cursor = if has_next_page || cursor.is_some() {
+        let active = EsSearchCursor::Pit {
+            pit_id: response_pit_id.clone(),
             index: index.clone(),
-            search_after: last_sort.unwrap_or_default(),
-            body: base_body,
+            search_after: last_sort.clone().or_else(|| search_after.clone()).unwrap_or_default(),
+            body: base_body.clone(),
             size,
             keep_alive: keep_alive.clone(),
         };
-        Some(encode_es_search_cursor(&next)?)
+        Some(encode_es_search_cursor(&active)?)
+    } else {
+        None
+    };
+    let next_cursor = if has_next_page {
+        active_cursor.clone()
     } else {
         // A first page that is already exhausted has no previous page to return
         // to, so close the PIT instead of holding it open.
         if use_cursor && cursor.is_none() {
-            let _ = close_es_pit(client, &pit_id).await;
+            let _ = close_es_pit(client, &response_pit_id).await;
         }
         None
     };
@@ -1876,7 +1885,7 @@ async fn execute_search_query(
         Ok(result) => result,
         Err(error) => {
             if use_cursor && cursor.is_none() {
-                let _ = close_es_pit(client, &pit_id).await;
+                let _ = close_es_pit(client, &response_pit_id).await;
             }
             return Err(error);
         }
@@ -1887,10 +1896,10 @@ async fn execute_search_query(
         }
     }
     if use_cursor {
-        // On an exhausted continuation, keep returning the cursor that was used
-        // so the frontend can still close the PIT during cleanup.
-        result.session_id = next_cursor.or_else(|| cursor.map(str::to_string));
-        result.has_more = next_cursor.is_some();
+        // Keep the latest PIT id available for cleanup after an exhausted page.
+        let has_more = next_cursor.is_some();
+        result.session_id = next_cursor.or(active_cursor).or_else(|| cursor.map(str::to_string));
+        result.has_more = has_more;
     }
     Ok(result)
 }
@@ -2331,7 +2340,7 @@ async fn execute_translated_select_star(
             EsSearchCursor::Pit { pit_id, index, search_after, body, size, .. } => {
                 (pit_id, Some(search_after), body, size, index)
             }
-            EsSearchCursor::Sql { cursor } => {
+            EsSearchCursor::Sql { cursor, .. } => {
                 let _ = close_es_sql_cursor(client, &cursor).await;
                 return Err("Elasticsearch SQL cursor cannot be used to continue a _search query".to_string());
             }
@@ -2372,11 +2381,9 @@ async fn execute_translated_select_star(
                 as usize;
         (pit_id, None, base_body, size, translated.index.clone())
     };
-    if let Some(cursor) = cursor {
-        if index != translated.index {
-            let _ = close_es_pit(client, &pit_id).await;
-            return Err("Elasticsearch cursor was created for a different index".to_string());
-        }
+    if cursor.is_some() && index != translated.index {
+        let _ = close_es_pit(client, &pit_id).await;
+        return Err("Elasticsearch cursor was created for a different index".to_string());
     }
 
     let mut request_body = base_body.clone();
@@ -2388,9 +2395,8 @@ async fn execute_translated_select_star(
         }
     }
 
-    let path = elasticsearch_index_path(&index, "_search");
     let resp = client
-        .post(&path)
+        .post("/_search")
         .json(&request_body)
         .send()
         .await
@@ -2405,23 +2411,30 @@ async fn execute_translated_select_star(
     }
 
     let body: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::Value::Null);
+    let response_pit_id = body.get("pit_id").and_then(serde_json::Value::as_str).map(str::to_string).unwrap_or(pit_id);
     let index_total = body.pointer("/hits/total/value").and_then(|v| v.as_u64());
     let hits = body.pointer("/hits/hits").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
     let last_sort = hits.last().and_then(|hit| hit.get("sort").and_then(serde_json::Value::as_array).cloned());
 
-    let next_cursor = if use_cursor && hits.len() == size && last_sort.is_some() {
-        let next = EsSearchCursor::Pit {
-            pit_id: pit_id.clone(),
+    let has_next_page = use_cursor && hits.len() == size && last_sort.is_some();
+    let active_cursor = if has_next_page || cursor.is_some() {
+        let active = EsSearchCursor::Pit {
+            pit_id: response_pit_id.clone(),
             index: index.clone(),
-            search_after: last_sort.unwrap_or_default(),
-            body: base_body,
+            search_after: last_sort.clone().or_else(|| search_after.clone()).unwrap_or_default(),
+            body: base_body.clone(),
             size,
             keep_alive: keep_alive.clone(),
         };
-        Some(encode_es_search_cursor(&next)?)
+        Some(encode_es_search_cursor(&active)?)
+    } else {
+        None
+    };
+    let next_cursor = if has_next_page {
+        active_cursor.clone()
     } else {
         if use_cursor && cursor.is_none() {
-            let _ = close_es_pit(client, &pit_id).await;
+            let _ = close_es_pit(client, &response_pit_id).await;
         }
         None
     };
@@ -2430,7 +2443,7 @@ async fn execute_translated_select_star(
         Ok(result) => result,
         Err(error) => {
             if use_cursor && cursor.is_none() {
-                let _ = close_es_pit(client, &pit_id).await;
+                let _ = close_es_pit(client, &response_pit_id).await;
             }
             return Err(error);
         }
@@ -2441,10 +2454,10 @@ async fn execute_translated_select_star(
         }
     }
     if use_cursor {
-        // On an exhausted continuation, keep returning the cursor that was used
-        // so the frontend can still close the PIT during cleanup.
-        result.session_id = next_cursor.or_else(|| cursor.map(str::to_string));
-        result.has_more = next_cursor.is_some();
+        // Keep the latest PIT id available for cleanup after an exhausted page.
+        let has_more = next_cursor.is_some();
+        result.session_id = next_cursor.or(active_cursor).or_else(|| cursor.map(str::to_string));
+        result.has_more = has_more;
     }
     Ok(result)
 }
@@ -2480,17 +2493,19 @@ async fn execute_sql_query(
     sql_response_parser: SqlResponseParser,
     cursor: Option<&str>,
 ) -> Result<QueryResult, String> {
-    let body = if let Some(cursor) = cursor {
+    let (body, mut column_metadata) = if let Some(cursor) = cursor {
         if let Ok(search_cursor) = decode_es_search_cursor(cursor) {
             match search_cursor {
-                EsSearchCursor::Sql { cursor } => serde_json::json!({ "cursor": cursor }),
+                EsSearchCursor::Sql { cursor, columns_key, columns } => {
+                    (serde_json::json!({ "cursor": cursor }), Some((columns_key, columns)))
+                }
                 EsSearchCursor::Pit { pit_id, .. } => {
                     let _ = close_es_pit(client, &pit_id).await;
                     return Err("Elasticsearch PIT cursor cannot be used to continue a _sql query".to_string());
                 }
             }
         } else {
-            serde_json::json!({ "cursor": cursor })
+            (serde_json::json!({ "cursor": cursor }), None)
         }
     } else {
         // The pagination plan rewrites ES SQL to `LIMIT n OFFSET m`. Strip the
@@ -2499,16 +2514,25 @@ async fn execute_sql_query(
         let (base_query, limit) = es_sql_pagination(query);
         let query = adapt_elasticsearch_sql_query(&base_query);
         let fetch_size = limit.unwrap_or(ES_SQL_FETCH_SIZE);
-        serde_json::json!({ "query": query, "fetch_size": fetch_size })
+        (serde_json::json!({ "query": query, "fetch_size": fetch_size }), None)
     };
 
     let resp =
         client.post("/_sql").json(&body).send().await.map_err(|e| format!("Elasticsearch request failed: {e}"))?;
     let status = client.response_status(&resp);
-    let response_body: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::Value::Null);
+    let mut response_body: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::Value::Null);
 
     if !status.is_success() {
         return Err(format_sql_error(status, &response_body));
+    }
+
+    if response_body.get("schema").is_none() && response_body.get("columns").is_none() {
+        if let (Some(body), Some((columns_key, columns))) = (response_body.as_object_mut(), column_metadata.as_ref()) {
+            body.insert(columns_key.clone(), serde_json::Value::Array(columns.clone()));
+        }
+    }
+    if column_metadata.is_none() {
+        column_metadata = sql_cursor_column_metadata(&response_body);
     }
 
     let mut result = match sql_response_parser(&response_body, start) {
@@ -2522,15 +2546,24 @@ async fn execute_sql_query(
         }
     };
     // Wrap the raw ES SQL cursor so close_cursor can distinguish it from a PIT
-    // cursor and close it with DELETE /_sql.
+    // cursor and close it with POST /_sql/close.
     if let Some(raw_cursor) = result.session_id.take() {
-        result.session_id = Some(encode_es_search_cursor(&EsSearchCursor::Sql { cursor: raw_cursor })?);
+        let (columns_key, columns) =
+            column_metadata.ok_or_else(|| "Elasticsearch SQL response missing column metadata".to_string())?;
+        result.session_id =
+            Some(encode_es_search_cursor(&EsSearchCursor::Sql { cursor: raw_cursor, columns_key, columns })?);
     } else if let Some(cursor) = cursor {
         // On an exhausted continuation, keep returning the cursor that was used
         // so the frontend can still close the SQL cursor during cleanup.
         result.session_id = Some(cursor.to_string());
     }
     Ok(result)
+}
+
+fn sql_cursor_column_metadata(body: &serde_json::Value) -> Option<(String, Vec<serde_json::Value>)> {
+    ["schema", "columns"].into_iter().find_map(|key| {
+        body.get(key).and_then(serde_json::Value::as_array).map(|columns| (key.to_string(), columns.clone()))
+    })
 }
 
 fn adapt_elasticsearch_sql_query(query: &str) -> String {
@@ -3425,12 +3458,135 @@ mod tests {
             super::EsSearchCursor::Sql { .. } => panic!("expected PIT search cursor"),
         }
 
-        let sql = super::EsSearchCursor::Sql { cursor: "raw-sql-cursor".to_string() };
+        let sql = super::EsSearchCursor::Sql {
+            cursor: "raw-sql-cursor".to_string(),
+            columns_key: "columns".to_string(),
+            columns: vec![serde_json::json!({ "name": "message", "type": "keyword" })],
+        };
         let encoded = super::encode_es_search_cursor(&sql).unwrap();
         match super::decode_es_search_cursor(&encoded).unwrap() {
-            super::EsSearchCursor::Sql { cursor } => assert_eq!(cursor, "raw-sql-cursor"),
+            super::EsSearchCursor::Sql { cursor, columns_key, columns } => {
+                assert_eq!(cursor, "raw-sql-cursor");
+                assert_eq!(columns_key, "columns");
+                assert_eq!(columns, vec![serde_json::json!({ "name": "message", "type": "keyword" })]);
+            }
             super::EsSearchCursor::Pit { .. } => panic!("expected SQL cursor"),
         }
+    }
+
+    #[tokio::test]
+    async fn pit_search_uses_global_endpoint_and_latest_pit_id() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            assert!(request.starts_with("POST /products/_pit?keep_alive=1m "), "{request}");
+            let response_body = r#"{"id":"pit-1"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            assert!(request.starts_with("POST /_search "), "{request}");
+            assert!(request.contains(r#""pit":{"id":"pit-1","keep_alive":"1m"}"#), "{request}");
+            let response_body = r#"{"pit_id":"pit-2","hits":{"total":{"value":2,"relation":"eq"},"hits":[{"_id":"1","_source":{"name":"one"},"sort":[1]}]}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let client = EsClient::new(&format!("http://{addr}"), None, None, false, Duration::from_secs(1));
+        let result = super::find_documents_with_cursor(&client, "products", 1, None, None, None).await.unwrap();
+        server.await.unwrap();
+
+        let cursor = super::decode_es_cursor(result.next_cursor.as_deref().unwrap()).unwrap();
+        assert_eq!(cursor.pit_id, "pit-2");
+    }
+
+    #[tokio::test]
+    async fn sql_cursor_continuation_reuses_first_page_columns() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            assert!(request.starts_with("POST /_sql "), "{request}");
+            let response_body = r#"{"columns":[{"name":"name","type":"keyword"}],"rows":[["first"]],"cursor":"raw-1"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            assert!(request.starts_with("POST /_sql "), "{request}");
+            assert!(request.ends_with(r#"{"cursor":"raw-1"}"#), "{request}");
+            let response_body = r#"{"rows":[["second"]]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let client = EsClient::new(&format!("http://{addr}"), None, None, false, Duration::from_secs(1));
+        let first = super::execute_rest_query(&client, "SELECT name FROM products").await.unwrap();
+        let second =
+            super::execute_rest_query_with_cursor(&client, "SELECT name FROM products", first.session_id.as_deref())
+                .await
+                .unwrap();
+        server.await.unwrap();
+
+        assert_eq!(second.columns, vec!["name"]);
+        assert_eq!(second.rows, vec![vec![json!("second")]]);
+        assert!(!second.has_more);
+    }
+
+    #[tokio::test]
+    async fn closes_pit_and_sql_cursors_with_elasticsearch_protocols() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            assert!(request.starts_with("DELETE /_pit "), "{request}");
+            assert!(request.ends_with(r#"{"id":"pit-1"}"#), "{request}");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            assert!(request.starts_with("POST /_sql/close "), "{request}");
+            assert!(request.ends_with(r#"{"cursor":"sql-1"}"#), "{request}");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+        });
+
+        let client = EsClient::new(&format!("http://{addr}"), None, None, false, Duration::from_secs(1));
+        super::close_es_pit(&client, "pit-1").await.unwrap();
+        super::close_es_sql_cursor(&client, "sql-1").await.unwrap();
+        server.await.unwrap();
     }
 
     #[test]

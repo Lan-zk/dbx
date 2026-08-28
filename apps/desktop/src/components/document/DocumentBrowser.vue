@@ -467,7 +467,7 @@ async function exportAllDocumentStoreDocuments(onProgress?: (info: { rowsExporte
       const requestLimit = Math.min(batchSize, kind === "dynamodb" ? 1000 : kind === "elasticsearch" ? ELASTICSEARCH_DEFAULT_MAX_RESULT_WINDOW : Number.POSITIVE_INFINITY, rowLimit - exportedDocuments.length);
       if (requestLimit <= 0) break;
       if (cursor) lastCursor = cursor;
-      const result = await api.documentFindDocuments(connectionId, database, collection, kind === "dynamodb" || kind === "elasticsearch" ? 0 : exportedDocuments.length, requestLimit, filter, undefined, sort, undefined, exportExecutionId, cursor);
+      const result = await api.documentFindDocuments(connectionId, database, collection, kind === "dynamodb" || kind === "elasticsearch" ? 0 : exportedDocuments.length, requestLimit, filter, undefined, sort, undefined, exportExecutionId, cursor, kind === "elasticsearch");
       const pageDocuments = result.documents.slice(0, requestLimit).map(asRecord);
       exportedDocuments.push(...pageDocuments);
 
@@ -766,7 +766,7 @@ async function closeElasticsearchCursor(cursor?: string) {
 }
 
 function resetElasticsearchPagination() {
-  const cursor = elasticsearchPageCursors.value.find((candidate): candidate is string => !!candidate);
+  const cursor = [...elasticsearchPageCursors.value].reverse().find((candidate): candidate is string => !!candidate);
   if (cursor) void closeElasticsearchCursor(cursor);
   elasticsearchPageCursors.value = [undefined];
   elasticsearchHasNextCursor.value = false;
@@ -1392,7 +1392,7 @@ async function load(options: { page?: number; append?: boolean; offset?: number;
     const skip = storeKind === "dynamodb" || storeKind === "elasticsearch" ? 0 : (options.offset ?? requestPage * pageSize.value);
     const requestedLimit = options.limit ?? pageSize.value;
     const requestLimit = storeKind === "elasticsearch" ? Math.min(requestedLimit, ELASTICSEARCH_DEFAULT_MAX_RESULT_WINDOW) : requestedLimit;
-    const result = await api.documentFindDocuments(connectionId, database, collection, skip, requestLimit, filter, undefined, sort, undefined, executionId, cursor);
+    const result = await api.documentFindDocuments(connectionId, database, collection, skip, requestLimit, filter, undefined, sort, undefined, executionId, cursor, storeKind === "elasticsearch");
     if (documentLoadExecutionId.value !== executionId) return;
     if (connectionId !== props.connectionId || database !== props.database || collection !== props.collection || storeKind !== documentStoreProvider.value.kind) return;
     const nextDocuments =

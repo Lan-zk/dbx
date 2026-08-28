@@ -1068,6 +1068,12 @@ export interface ExternalSqlFileVersion {
   contentHash: string;
 }
 
+export interface QueryPageJumpProgress {
+  completedRequests: number;
+  totalRequests: number;
+  targetPage: number;
+}
+
 export interface QueryTab {
   id: string;
   title: string;
@@ -1111,6 +1117,8 @@ export interface QueryTab {
   resultTotalRowCountLoading?: boolean;
   resultSessionId?: string;
   resultClientSessionId?: string;
+  /** Ephemeral UI progress for sequential Elasticsearch cursor requests. */
+  resultPageJumpProgress?: QueryPageJumpProgress;
   resultAccessedAt?: number;
   resultEstimatedBytes?: number;
   resultCacheKey?: string;
