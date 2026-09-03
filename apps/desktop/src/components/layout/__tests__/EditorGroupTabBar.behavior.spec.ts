@@ -90,6 +90,7 @@ function mountBar(groupId: string, tabs: string[], activeTabId: string | null, a
             copyName: "Copy name",
             closeTab: "Close",
             closeOtherTabs: "Close other tabs",
+            closeLeftTabs: "Close left tabs",
             closeRightTabs: "Close right tabs",
             closeAllTabs: "Close all tabs",
             pinTab: "Pin",
@@ -254,6 +255,55 @@ describe("EditorGroupTabBar behavior", () => {
     host.remove();
   });
 
+  it("disables the split actions while only one tab exists, enabling them once a second tab joins", async () => {
+    const store = useQueryStore();
+    const onlyId = store.createTab("pg-1", "app", "Query 1", "query");
+
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, [onlyId], onlyId, pinia);
+    await settle();
+
+    // Splitting the only tab would return to the same single-group layout, so
+    // the actions render disabled instead of doing nothing.
+    const splitItems = (host: HTMLElement) => JSON.parse(host.querySelector<HTMLElement>(".ctx-menu-stub")!.dataset.menuItems ?? "[]").filter((item: { label: string }) => item.label === "Split right" || item.label === "Split down");
+    expect(splitItems(host)).toHaveLength(2);
+    for (const item of splitItems(host)) {
+      expect(item).toMatchObject({ disabled: true });
+    }
+
+    store.createTab("pg-1", "app", "Query 2", "query");
+    await settle();
+
+    for (const item of splitItems(host)) {
+      expect(item).toMatchObject({ disabled: false });
+    }
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("offers the split actions for non-query tabs, enabled like query tabs", async () => {
+    const store = useQueryStore();
+    const queryId = store.createTab("pg-1", "app", "Query 1", "query");
+    const dataId = store.createTab("pg-1", "app", "users", "data", "public");
+
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, [queryId, dataId], dataId, pinia);
+    await settle();
+
+    const pill = tabPill(host, dataId);
+    const stub = pill.closest<HTMLElement>(".ctx-menu-stub")!;
+    const items = JSON.parse(stub.dataset.menuItems ?? "[]");
+    const splitItems = items.filter((item: { label: string }) => item.label === "Split right" || item.label === "Split down");
+    expect(splitItems).toHaveLength(2);
+    for (const item of splitItems) {
+      expect(item).toMatchObject({ disabled: false });
+    }
+
+    app.unmount();
+    host.remove();
+  });
+
   it("keeps split actions visible but disabled once four groups exist", async () => {
     const store = useQueryStore();
     const firstId = store.createTab("pg-1", "app", "Query 1", "query");
@@ -283,6 +333,38 @@ describe("EditorGroupTabBar behavior", () => {
     expect(disabledSplit).toMatchObject({ disabled: true });
     // The store rejects a fifth split with the same capacity rule.
     expect(store.splitTabRight(fifthId)).toBe(false);
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("offers close-left between close-other and close-right, disabled when nothing is to the left", async () => {
+    const store = useQueryStore();
+    const firstId = store.createTab("pg-1", "app", "Query 1", "query");
+    const secondId = store.createTab("pg-1", "app", "Query 2", "query");
+
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, [firstId, secondId], firstId, pinia);
+    await settle();
+
+    // One stub per tab; the stub wraps the tab pill, so scope by ancestor.
+    // The stub only serializes label/disabled/visible — the closing behavior
+    // itself is covered by queryStore.groups.spec.
+    const menuFor = (tabId: string) => {
+      const pill = tabPill(host, tabId);
+      const stub = pill.closest<HTMLElement>(".ctx-menu-stub");
+      return JSON.parse(stub!.dataset.menuItems ?? "[]");
+    };
+    const labels = (tabId: string) => menuFor(tabId).map((item: { label: string }) => item.label);
+
+    // First tab: nothing to its left — the action exists but is disabled.
+    expect(menuFor(firstId).find((item: { label: string }) => item.label === "Close left tabs")).toMatchObject({ disabled: true });
+    const order = labels(firstId);
+    expect(order.indexOf("Close left tabs")).toBeGreaterThan(order.indexOf("Close other tabs"));
+    expect(order.indexOf("Close left tabs")).toBeLessThan(order.indexOf("Close right tabs"));
+
+    // Second tab: a tab exists to its left — the action becomes enabled.
+    expect(menuFor(secondId).find((item: { label: string }) => item.label === "Close left tabs")).toMatchObject({ disabled: false });
 
     app.unmount();
     host.remove();

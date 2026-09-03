@@ -1057,8 +1057,14 @@ export const useQueryStore = defineStore("query", () => {
     if (groups.value.length >= 4) {
       return false;
     }
+    // With a single open tab the split is a no-op: the tab moves into the new
+    // group, the emptied source group is pruned, and the layout returns to one
+    // group holding the same tab (only the group identity churns).
+    if (tabs.value.length <= 1) {
+      return false;
+    }
     const tab = tabs.value.find((item) => item.id === tabId);
-    if (!tab || tab.mode !== "query") {
+    if (!tab) {
       return false;
     }
     const owner = groupForTab(tabId);
@@ -3461,6 +3467,21 @@ export const useQueryStore = defineStore("query", () => {
     if (targetIndex < 0) return;
     const ids = partition.slice(targetIndex + 1);
     if (ids.length === 0) return;
+    const finalActiveTabId = group.activeTabId && !ids.includes(group.activeTabId) ? group.activeTabId : id;
+    beginBatchClose(ids, finalActiveTabId);
+  }
+
+  function closeLeftTabsInGroup(groupId: string, id: string) {
+    const group = findGroup(groupId);
+    const target = tabs.value.find((tab) => tab.id === id);
+    if (!group || !target) return;
+    const partition = group.tabIds.filter((tabId) => {
+      const tab = tabs.value.find((item) => item.id === tabId);
+      return tab && Boolean(tab.pinned) === Boolean(target.pinned);
+    });
+    const targetIndex = partition.indexOf(id);
+    if (targetIndex <= 0) return;
+    const ids = partition.slice(0, targetIndex);
     const finalActiveTabId = group.activeTabId && !ids.includes(group.activeTabId) ? group.activeTabId : id;
     beginBatchClose(ids, finalActiveTabId);
   }
@@ -7643,6 +7664,7 @@ export const useQueryStore = defineStore("query", () => {
     closeOtherTabs,
     closeOtherTabsInGroup,
     closeRightTabsInGroup,
+    closeLeftTabsInGroup,
     closeAllTabsInGroup,
     closeTabsByIds,
     closeRightTabs,

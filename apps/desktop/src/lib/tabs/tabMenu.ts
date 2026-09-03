@@ -63,6 +63,15 @@ export function createCloseRightTabMenuItem(options: { label: string; disabled?:
   };
 }
 
+export function createCloseLeftTabMenuItem(options: { label: string; disabled?: boolean; onClose: () => void }): ContextMenuItem {
+  return {
+    label: options.label,
+    action: options.onClose,
+    ...(options.disabled !== undefined ? { disabled: options.disabled } : {}),
+    icon: X,
+  };
+}
+
 export function createCloseAllTabMenuItem(options: { label: string; variant?: "destructive"; onClose: () => void }): ContextMenuItem {
   return {
     label: options.label,

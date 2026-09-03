@@ -43,7 +43,7 @@ import { useTabScroll } from "@/composables/useTabScroll";
 import { useToast } from "@/composables/useToast";
 import { copyToClipboard } from "@/lib/common/clipboard";
 import { parseTabDragPayload, serializeTabDragPayload } from "@/lib/tabs/tabDrag";
-import { createCloseAllTabMenuItem, createCloseOtherTabMenuItem, createCloseRightTabMenuItem, createCloseTabMenuItem, createLocateTabMenuItem, createPinTabMenuItem, createRenameDuplicateTabItems } from "@/lib/tabs/tabMenu";
+import { createCloseAllTabMenuItem, createCloseLeftTabMenuItem, createCloseOtherTabMenuItem, createCloseRightTabMenuItem, createCloseTabMenuItem, createLocateTabMenuItem, createPinTabMenuItem, createRenameDuplicateTabItems } from "@/lib/tabs/tabMenu";
 import { dirtyTabTitleStyle, tabColorStyle as sharedTabColorStyle, tabDatabaseIconType, tabDisplayTitle, tabIconClass, tabTooltipLines } from "@/lib/tabs/tabPresentation";
 import { activeTabSidebarTarget } from "@/lib/sidebar/sidebarActiveTabTarget";
 import "./appTabBar.css";
@@ -76,6 +76,7 @@ const suppressNextTabClick = ref(false);
 const isClassicLayout = computed(() => settingsStore.editorSettings.appLayout === "classic");
 const isWrapLayout = computed(() => settingsStore.editorSettings.tabLayout === "wrap");
 const groupCapacityReached = computed(() => queryStore.groups.length >= 4);
+const splitUnavailable = computed(() => groupCapacityReached.value || queryStore.tabs.length <= 1);
 const canChangeOrientation = computed(() => queryStore.groups.length >= 2);
 const isSecondaryGroup = computed(() => queryStore.groups[0]?.id !== props.groupId);
 const compactTabTitle = computed({
@@ -270,6 +271,11 @@ function hasTabsToRight(tab: QueryTab) {
   return tabsToRightInGroup(tab).length > 0;
 }
 
+function hasTabsToLeft(tab: QueryTab) {
+  const index = props.tabs.findIndex((item) => item.id === tab.id);
+  return index > 0 && Boolean(props.tabs[index - 1]?.pinned) === Boolean(tab.pinned);
+}
+
 function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
   const items: ContextMenuItem[] = [
     {
@@ -305,24 +311,24 @@ function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
       label: tab.pinned ? t("contextMenu.unpinTab") : t("contextMenu.pinTab"),
       onToggle: () => queryStore.togglePinnedTab(tab.id),
     }),
-    // Split actions stay visible at the four-group cap but render disabled;
-    // the store rejects the operation with the same `groups.length >= 4` rule.
-    ...(tab.mode === "query"
-      ? [
-          {
-            label: t("contextMenu.splitRight"),
-            action: () => queryStore.splitTabRight(tab.id),
-            disabled: groupCapacityReached.value,
-            icon: ArrowRight,
-          },
-          {
-            label: t("contextMenu.splitDown"),
-            action: () => queryStore.splitTabDown(tab.id),
-            disabled: groupCapacityReached.value,
-            icon: ArrowDown,
-          },
-        ]
-      : []),
+    // Split actions stay visible but render disabled when they cannot produce
+    // a new layout — at the four-group cap, or with a single open tab (the
+    // store rejects with the same rules). Every tab type can split: groups
+    // host non-query tabs via ContentArea, same as moving them between groups.
+    ...[
+      {
+        label: t("contextMenu.splitRight"),
+        action: () => queryStore.splitTabRight(tab.id),
+        disabled: splitUnavailable.value,
+        icon: ArrowRight,
+      },
+      {
+        label: t("contextMenu.splitDown"),
+        action: () => queryStore.splitTabDown(tab.id),
+        disabled: splitUnavailable.value,
+        icon: ArrowDown,
+      },
+    ],
     ...(canChangeOrientation.value
       ? [
           {
@@ -345,6 +351,11 @@ function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
     createCloseOtherTabMenuItem({
       label: t("contextMenu.closeOtherTabs"),
       onClose: () => queryStore.closeOtherTabsInGroup(props.groupId, tab.id),
+    }),
+    createCloseLeftTabMenuItem({
+      label: t("contextMenu.closeLeftTabs"),
+      disabled: !hasTabsToLeft(tab),
+      onClose: () => queryStore.closeLeftTabsInGroup(props.groupId, tab.id),
     }),
     createCloseRightTabMenuItem({
       label: t("contextMenu.closeRightTabs"),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCloseAllTabMenuItem, createCloseOtherTabMenuItem, createCloseRightTabMenuItem, createCloseTabMenuItem, createLocateTabMenuItem, createPinTabMenuItem, createRenameDuplicateTabItems } from "@/lib/tabs/tabMenu";
+import { createCloseAllTabMenuItem, createCloseLeftTabMenuItem, createCloseOtherTabMenuItem, createCloseRightTabMenuItem, createCloseTabMenuItem, createLocateTabMenuItem, createPinTabMenuItem, createRenameDuplicateTabItems } from "@/lib/tabs/tabMenu";
 
 const t = (key: string) => key;
 
@@ -105,6 +105,19 @@ describe("shared tab menu helpers", () => {
       onClose: () => undefined,
     });
     expect("disabled" in closeRightWithoutDisabled).toBe(false);
+
+    const closeLeft = createCloseLeftTabMenuItem({
+      label: "Close Left",
+      disabled: true,
+      onClose: () => undefined,
+    });
+    expect(closeLeft.disabled).toBe(true);
+
+    const closeLeftWithoutDisabled = createCloseLeftTabMenuItem({
+      label: "Close Left",
+      onClose: () => undefined,
+    });
+    expect("disabled" in closeLeftWithoutDisabled).toBe(false);
 
     const closeAll = createCloseAllTabMenuItem({
       label: "Close All",

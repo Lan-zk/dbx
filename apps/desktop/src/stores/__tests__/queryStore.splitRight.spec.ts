@@ -53,25 +53,35 @@ describe("queryStore split right", () => {
     expect(queryStore.groups).toHaveLength(4);
   });
 
-  it("does not split non-query tabs", async () => {
+  it("splits non-query tabs into their own group like query tabs", async () => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const queryStore = useQueryStore();
+    // A companion query tab keeps the store past the single-tab guard.
+    queryStore.createTab("pg-1", "app", "Query 1", "query");
     const dataId = queryStore.createTab("pg-1", "app", "users", "data", "public");
 
-    expect(queryStore.splitTabRight(dataId)).toBe(false);
-    expect(queryStore.groups).toHaveLength(1);
+    expect(queryStore.splitTabRight(dataId)).toBe(true);
+    expect(queryStore.groups).toHaveLength(2);
+    expect(queryStore.groups[1].tabIds).toEqual([dataId]);
+    expect(queryStore.groups[1].activeTabId).toBe(dataId);
+    expect(queryStore.activeTabId).toBe(dataId);
   });
 
-  it("removes an empty source group when the split tab was its only tab", async () => {
+  it("rejects splitting the only open tab, which would be a no-op", async () => {
     const { useQueryStore } = await import("@/stores/queryStore");
     const queryStore = useQueryStore();
     const onlyId = queryStore.createTab("pg-1", "app", "Query 1", "query");
+    const groupIdBefore = queryStore.groups[0].id;
 
     const ok = queryStore.splitTabRight(onlyId);
 
-    expect(ok).toBe(true);
+    // Splitting would move the tab into a new group and prune the emptied
+    // source group, returning to the same single-group layout — rejected so
+    // the menu item can render disabled instead of doing nothing.
+    expect(ok).toBe(false);
     expect(queryStore.groups).toHaveLength(1);
+    expect(queryStore.groups[0].id).toBe(groupIdBefore);
     expect(queryStore.groups[0].tabIds).toEqual([onlyId]);
-    expect(queryStore.focusedGroupId).toBe(queryStore.groups[0].id);
+    expect(queryStore.focusedGroupId).toBe(groupIdBefore);
   });
 });
