@@ -155,6 +155,8 @@ import { applyMongoGridChangesToDocument, applyMongoGridChangesToDocumentBaselin
 import type { DataGridSortMode } from "@/lib/dataGrid/dataGridSort";
 import { isDataGridToolbarCompact, type DataGridReloadIntent } from "@/lib/dataGrid/dataGridToolbar";
 import { useTabScroll } from "@/composables/useTabScroll";
+import { useToolbarOverflow } from "@/composables/useToolbarOverflow";
+import ToolbarOverflowMenu from "@/components/ui/ToolbarOverflowMenu.vue";
 import { formatElapsedSeconds } from "@/lib/common/elapsedTime";
 import { copyToClipboard } from "@/lib/common/clipboard";
 import type { CustomSaveHandler } from "@/composables/useDataGridEditor";
@@ -265,6 +267,16 @@ const standaloneResultToolbarWidth = ref(0);
 const standaloneResultToolbarViewportWidth = ref(0);
 const resultTabsScrollerRef = ref<HTMLElement | null>(null);
 const dataGridViewOptionsOpen = ref(false);
+// Data-mode header condensation (same measured-tier mechanism as the SQL
+// editor toolbar). The chips keep a min-width floor so scrollWidth reports
+// real overflow; tiers then drop button labels and move secondary actions
+// into the overflow menu instead of crushing the chips away.
+const dataToolbarRef = ref<HTMLElement | null>(null);
+const { tier: dataToolbarTier } = useToolbarOverflow(dataToolbarRef, [() => props.activeTab.id, () => !!props.activeTab.result]);
+const dataToolbarCompact = computed(() => dataToolbarTier.value >= 1);
+const showDataToolbarOverflow = computed(() => dataToolbarTier.value >= 2);
+const showDataTableInfoButton = computed(() => dataToolbarTier.value < 2);
+const showDataColumnsChip = computed(() => dataToolbarTier.value < 2);
 const dataGridRenderMode = computed(() => settingsStore.editorSettings.dataGridRenderMode);
 const dataGridSearchMode = computed(() => settingsStore.editorSettings.dataGridSearchMode);
 const resultRunDisplayMode = computed(() => settingsStore.editorSettings.resultRunDisplayMode);
@@ -1906,27 +1918,41 @@ defineExpose({
     <!-- Data mode: full-height grid -->
     <template v-else-if="activeTab.mode === 'data'">
       <div class="flex-1 min-h-0 flex flex-col">
-        <div class="h-9 shrink-0 border-b bg-background/80 px-3 flex items-center gap-2 text-xs">
-          <!-- No fixed max-w cap on these chips: they must flex (min-w-0 + truncate)
-               so long names only clip when the header row itself runs out of space (#7880). -->
-          <span v-if="activeConnection?.name?.trim()" data-data-header-connection class="inline-flex min-w-0 items-center truncate rounded border border-border bg-muted/30 px-2 py-0.5 text-muted-foreground" :title="activeConnection.name">
+        <div ref="dataToolbarRef" class="h-9 shrink-0 border-b bg-background/80 px-3 flex items-center gap-2 text-xs overflow-hidden">
+          <!-- No fixed max-w cap on these chips: they must flex (truncate)
+               so long names only clip when the header row itself runs out
+               (#7880). The min-w floor keeps scrollWidth reporting real
+               overflow so the measured tiers condense the row before the
+               chips collapse. -->
+          <span v-if="activeConnection?.name?.trim()" data-data-header-connection class="inline-flex min-w-12 items-center truncate rounded border border-border bg-muted/30 px-2 py-0.5 text-muted-foreground" :title="activeConnection.name">
             {{ activeConnection.name }}
           </span>
-          <span class="inline-flex min-w-0 items-center truncate rounded border border-border bg-muted/50 px-2 py-0.5 font-medium" :title="activeTab.tableMeta?.tableName || activeTab.title">
+          <span class="inline-flex min-w-12 items-center truncate rounded border border-border bg-muted/50 px-2 py-0.5 font-medium" :title="activeTab.tableMeta?.tableName || activeTab.title">
             {{ activeTab.tableMeta?.tableName || activeTab.title }}
           </span>
-          <span class="inline-flex min-w-0 items-center truncate rounded border border-border bg-muted/30 px-2 py-0.5 text-muted-foreground" :title="[activeTab.tableMeta?.schema, databaseDisplayNameForTab(activeTab.connectionId, activeTab.database, t)].filter(Boolean).join('@')">
+          <span class="inline-flex min-w-12 items-center truncate rounded border border-border bg-muted/30 px-2 py-0.5 text-muted-foreground" :title="[activeTab.tableMeta?.schema, databaseDisplayNameForTab(activeTab.connectionId, activeTab.database, t)].filter(Boolean).join('@')">
             <template v-if="activeTab.tableMeta?.schema">{{ activeTab.tableMeta.schema }}@</template>{{ databaseDisplayNameForTab(activeTab.connectionId, activeTab.database, t) }}
           </span>
-          <span v-if="activeTab.mode === 'data' && activeTab.tableMeta" class="inline-flex shrink-0 items-center rounded border border-border bg-muted/30 px-2 py-0.5 font-medium text-muted-foreground tabular-nums"> {{ activeTab.tableMeta.columns.length }} {{ t("tree.columns") }} </span>
+          <span v-if="showDataColumnsChip && activeTab.mode === 'data' && activeTab.tableMeta" class="inline-flex shrink-0 items-center rounded border border-border bg-muted/30 px-2 py-0.5 font-medium text-muted-foreground tabular-nums">
+            {{ activeTab.tableMeta.columns.length }} {{ t("tree.columns") }}
+          </span>
           <span class="ml-auto" />
           <DataGridColumnLayoutPopover v-if="activeTab.result?.columns.length" :grid="dataGridRef" trigger-class="px-1.5" />
-          <Button v-if="activeTab.result && activeTab.tableMeta && activeTab.connectionId" variant="ghost" size="sm" class="h-5 text-xs px-1.5 shrink-0" :class="{ 'bg-accent': dataGridRef?.showDdl }" @click="dataGridRef?.toggleDdl()"
-            ><TableProperties class="h-3.5 w-3.5" />{{ t("grid.tableInfo") }}</Button
+          <Button
+            v-if="showDataTableInfoButton && activeTab.result && activeTab.tableMeta && activeTab.connectionId"
+            variant="ghost"
+            size="sm"
+            class="h-5 text-xs px-1.5 shrink-0"
+            :class="{ 'bg-accent': dataGridRef?.showDdl }"
+            :title="dataToolbarCompact ? t('grid.tableInfo') : undefined"
+            @click="dataGridRef?.toggleDdl()"
+            ><TableProperties class="h-3.5 w-3.5" /><span v-if="!dataToolbarCompact">{{ t("grid.tableInfo") }}</span></Button
           >
           <DropdownMenu v-if="activeTab.result && activeTab.tableMeta && activeTab.connectionId">
             <DropdownMenuTrigger as-child>
-              <Button variant="ghost" size="sm" class="h-5 text-xs px-1.5 shrink-0" :title="t('tableToolbox.title')"><Toolbox class="h-3.5 w-3.5" />{{ t("tableToolbox.title") }}</Button>
+              <Button variant="ghost" size="sm" class="h-5 text-xs px-1.5 shrink-0" :title="t('tableToolbox.title')"
+                ><Toolbox class="h-3.5 w-3.5" /><span v-if="!dataToolbarCompact">{{ t("tableToolbox.title") }}</span></Button
+              >
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" class="w-max min-w-44 gap-0 overflow-hidden rounded-md border bg-popover p-0 text-popover-foreground shadow-xl">
               <div class="border-b bg-muted/40 px-3 py-2">
@@ -2164,6 +2190,12 @@ defineExpose({
               />
             </PopoverContent>
           </Popover>
+          <ToolbarOverflowMenu v-if="showDataToolbarOverflow" :label="t('toolbar.moreActions')">
+            <DropdownMenuItem v-if="activeTab.result && activeTab.tableMeta && activeTab.connectionId" @select="dataGridRef?.toggleDdl()">
+              <TableProperties class="h-3.5 w-3.5" />
+              {{ t("grid.tableInfo") }}
+            </DropdownMenuItem>
+          </ToolbarOverflowMenu>
         </div>
         <DataGrid
           v-if="activeTab.result"
