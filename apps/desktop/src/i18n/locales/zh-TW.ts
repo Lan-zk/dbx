@@ -144,6 +144,7 @@ export default withEnglishFallback({
     changePasswordDescription: "輸入目前密碼並設定新密碼",
   },
   toolbar: {
+    moreActions: "更多操作",
     newConnection: "建立連線",
     newQuery: "建立查詢",
     execute: "執行",
@@ -1378,6 +1379,8 @@ export default withEnglishFallback({
   },
   tabs: {
     sql: "SQL",
+    noQueryResult: "沒有查詢結果",
+    emptyGroup: "暫無開啟的頁籤",
     table: "資料表",
     tableData: "資料表",
     redis: "Redis",
@@ -2891,6 +2894,10 @@ export default withEnglishFallback({
     refreshTab: "重新整理資料",
     renameTab: "重新命名分頁",
     duplicateTab: "複製分頁",
+    splitRight: "拆分並右移",
+    splitDown: "拆分並下移",
+    changeOrientation: "變更分割方向",
+    unsplit: "取消分割",
     compactTabTitle: "縮短標籤標題",
     fullTabTitle: "完整分頁標題",
     closeTab: "關閉分頁",

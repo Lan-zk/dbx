@@ -218,7 +218,7 @@ describe("useSqlExecution", () => {
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
     expect(execution.sqlParameterNames.value).toEqual([]);
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, {});
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
   });
 
   it("passes the selected statement's editor offset to the query store", async () => {
@@ -244,7 +244,7 @@ describe("useSqlExecution", () => {
 
     await execution.tryExecute({ fullSql, selectedSql, cursorPos: selectionFrom, selectionFrom, selectionTo: fullSql.length - 1 });
 
-    expect(executeCurrentSql).toHaveBeenCalledWith(selectedSql, { sourceOffset: selectionFrom });
+    expect(executeCurrentSql).toHaveBeenCalledWith(selectedSql, { tabId: "tab-1", sourceOffset: selectionFrom });
   });
 
   it("expands preceding @set values in a selected shell-style statement", async () => {
@@ -272,7 +272,7 @@ describe("useSqlExecution", () => {
     await execution.tryExecute({ fullSql, selectedSql, cursorPos: selectionFrom, selectionFrom, selectionTo });
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
-    expect(executeCurrentSql).toHaveBeenCalledWith("SELECT * FROM patrol WHERE post_id = '224';", {});
+    expect(executeCurrentSql).toHaveBeenCalledWith("SELECT * FROM patrol WHERE post_id = '224';", { tabId: "tab-1" });
   });
 
   it("opens the result table for a multi-statement batch by default", async () => {
@@ -670,7 +670,7 @@ SELECT @value AS Message;`;
 
     await execution.tryExecuteInNewResultTab();
 
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { openInNewResultTab: true });
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1", openInNewResultTab: true });
   });
 
   it("does not record or refresh when a new-result execution restores the prior run", async () => {
@@ -722,7 +722,7 @@ SELECT @value AS Message;`;
 
     await execution.onSqlParametersConfirm(resolvedSql);
 
-    expect(executeCurrentSql).toHaveBeenCalledWith(resolvedSql, { openInNewResultTab: true });
+    expect(executeCurrentSql).toHaveBeenCalledWith(resolvedSql, { tabId: "tab-1", openInNewResultTab: true });
   });
 
   it("executes the PostgreSQL ARRAY date-format query without opening the parameter dialog", async () => {
@@ -782,7 +782,7 @@ SELECT @value AS Message;`;
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
     expect(execution.sqlParameterNames.value).toEqual([]);
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, {});
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
   });
 
   it("executes Oracle database-link queries without opening the parameter dialog", async () => {
@@ -807,7 +807,7 @@ SELECT @value AS Message;`;
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
     expect(execution.sqlParameterNames.value).toEqual([]);
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, {});
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
   });
 
   it("sends native SET variables without client-side expansion", async () => {
@@ -879,7 +879,7 @@ SELECT @value AS Message;`;
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
     expect(execution.sqlParameterNames.value).toEqual([]);
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, {});
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
   });
 
   it.each([
@@ -942,7 +942,7 @@ SELECT @value AS Message;`;
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
     expect(execution.sqlParameterNames.value).toEqual([]);
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { sourceOffset: 0, onExecutionStarted: expect.any(Function) });
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1", sourceOffset: 0, onExecutionStarted: expect.any(Function) });
   });
 
   it("sends Doris STRUCT DDL unchanged without opening the parameter dialog", async () => {
@@ -975,7 +975,7 @@ SELECT @value AS Message;`;
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
     expect(execution.sqlParameterNames.value).toEqual([]);
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, {});
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
   });
 
   it("records a later MySQL batch error and skips metadata refresh", async () => {
@@ -1140,7 +1140,7 @@ SELECT @value AS Message;`;
 
     await execution.onDangerConfirm();
 
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { openInNewResultTab: true });
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1", openInNewResultTab: true });
   });
 
   it("keeps the active retained result when a new-result dangerous prompt is cancelled", async () => {
@@ -1224,7 +1224,7 @@ SELECT @value AS Message;`;
 
     await execution.onDangerConfirm();
 
-    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { skipRedisSafetyCheck: false, openInNewResultTab: true });
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1", skipRedisSafetyCheck: false, openInNewResultTab: true });
   });
 
   it("distinguishes read-only and mutating Meilisearch REST requests", () => {

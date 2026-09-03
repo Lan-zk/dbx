@@ -1,0 +1,135 @@
+/*
+ * Shared tab-bar styles for AppTabBar (special pages) and EditorGroupTabBar
+ * (per-group tabs). These rules are global CSS instead of scoped styles
+ * because both components render the same class names and scoped rules in one
+ * component would never match the other's DOM.
+ */
+
+/* 多行平铺模式：覆盖滚动相关样式，让标签换行展示 */
+.app-tab-scroll.wrap-mode {
+  height: auto !important;
+  overflow: visible !important;
+  overflow-x: visible !important;
+  overflow-y: visible !important;
+  flex-wrap: wrap;
+}
+
+/* 父级 strip 容器在包含 wrap-mode 时也需要解除高度约束和裁剪 */
+.app-tab-strip:has(.wrap-mode) {
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* 标签栏行容器（直接子 div）在包含 wrap-mode 时解除固定高度和裁剪 */
+.app-tab-bar > div:has(.wrap-mode) {
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* 标签栏本身也解除裁剪，让换行内容自然撑高 */
+.app-tab-bar:has(.wrap-mode) {
+  overflow: visible !important;
+}
+
+/* 经典布局 + 多行模式：优化多行标签显示 */
+.app-tab-scroll.classic-wrap {
+  row-gap: 0.25rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  align-items: flex-start;
+}
+
+/* 经典布局下 h-full 在 height:auto 容器中失效，改为固定高度 */
+.app-tab-scroll.classic-wrap > div {
+  height: 2rem;
+}
+
+.app-tab-pill {
+  background-color: var(--app-tab-background);
+}
+
+.app-tab-pill[data-active-tab="false"]:hover {
+  background-color: var(--app-tab-hover-background, color-mix(in oklch, var(--foreground) 8%, transparent));
+}
+
+.dirty-tab-marker {
+  display: inline-flex;
+  width: 0.5rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 12px;
+  opacity: 0.9;
+  transform: translateY(2px);
+}
+
+.app-tab-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.app-tab-scrollbar {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  z-index: 20;
+  height: 6px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+  transition: opacity 140ms ease;
+}
+
+.app-tab-strip:hover .app-tab-scrollbar,
+.app-tab-strip:focus-within .app-tab-scrollbar,
+.app-tab-scrollbar--dragging {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app-tab-scrollbar::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
+.app-tab-scrollbar--bottom {
+  top: auto;
+  bottom: 0;
+}
+
+.app-tab-scrollbar--bottom::before {
+  top: auto;
+  bottom: 0;
+}
+
+.app-tab-scrollbar__thumb {
+  position: absolute;
+  top: 0;
+  height: 2px;
+  min-width: 20px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--foreground) 30%, transparent);
+  transition:
+    height 120ms ease,
+    background-color 120ms ease;
+}
+
+.app-tab-scrollbar--bottom .app-tab-scrollbar__thumb {
+  top: auto;
+  bottom: 0;
+}
+
+.app-tab-scrollbar:hover .app-tab-scrollbar__thumb,
+.app-tab-scrollbar--dragging .app-tab-scrollbar__thumb {
+  height: 5px;
+  background: color-mix(in oklch, var(--foreground) 52%, transparent);
+}
