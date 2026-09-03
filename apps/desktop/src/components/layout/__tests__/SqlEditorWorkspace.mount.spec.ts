@@ -17,6 +17,10 @@ vi.mock("splitpanes", () => ({
 
 const editorPreviewCalls = vi.hoisted(() => [] as Array<{ tabId: string; range: unknown }>);
 const editorFocusCalls = vi.hoisted(() => [] as Array<{ tabId: string; range: unknown }>);
+const groupHandleModRCalls = vi.hoisted(() => [] as Element[]);
+const groupFocusSearchCalls = vi.hoisted(() => [] as Array<Element | null>);
+const resultHandleModRCalls = vi.hoisted(() => [] as Element[]);
+const resultFocusSearchCalls = vi.hoisted(() => [] as boolean[]);
 
 vi.mock("@/components/layout/EditorGroup.vue", () => ({
   default: {
@@ -30,6 +34,14 @@ vi.mock("@/components/layout/EditorGroup.vue", () => ({
       },
       focusStatementRange(tabId: string, range: unknown) {
         editorFocusCalls.push({ tabId, range });
+        return true;
+      },
+      handleModRTarget(target: Element) {
+        groupHandleModRCalls.push(target);
+        return true;
+      },
+      focusSearch(target?: Element | null) {
+        groupFocusSearchCalls.push(target ?? null);
         return true;
       },
     },
@@ -50,6 +62,16 @@ vi.mock("@/components/layout/QueryResultSurface.vue", () => ({
     name: "QueryResultSurfaceStub",
     props: ["activeTab"],
     emits: ["previewStatement", "focusStatement"],
+    methods: {
+      handleModRTarget(target: Element) {
+        resultHandleModRCalls.push(target);
+        return true;
+      },
+      focusSearch() {
+        resultFocusSearchCalls.push(true);
+        return true;
+      },
+    },
     template: `<div data-test="result-surface">{{ activeTab?.id }}<button data-test="emit-preview" @click="$emit('previewStatement', 'tab-a', { from: 0, to: 8 })">preview</button><button data-test="emit-focus" @click="$emit('focusStatement', 'tab-a', { from: 0, to: 8 })">focus</button></div>`,
   },
 }));
@@ -68,6 +90,10 @@ function tab(id: string) {
   } as const;
 }
 
+function dataTab(id: string) {
+  return { ...tab(id), mode: "data" };
+}
+
 function createHost(): HTMLDivElement {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -82,12 +108,16 @@ describe("SqlEditorWorkspace mount contract", () => {
     document.body.innerHTML = "";
     editorPreviewCalls.length = 0;
     editorFocusCalls.length = 0;
+    groupHandleModRCalls.length = 0;
+    groupFocusSearchCalls.length = 0;
+    resultHandleModRCalls.length = 0;
+    resultFocusSearchCalls.length = 0;
     pinia = createPinia();
     setActivePinia(pinia);
     i18n = createI18n({
       legacy: false,
       locale: "en",
-      messages: { en: { "tabs.noQueryResult": "No query result" } },
+      messages: { en: {} },
     });
   });
 
@@ -202,6 +232,8 @@ describe("SqlEditorWorkspace mount contract", () => {
 
     vm.toggleResultsPane();
     await nextTick();
+    // Wait out the leave transition frame before asserting the unmount.
+    await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(host.querySelector('[data-test="result-surface"]')).toBeNull();
 
@@ -275,6 +307,154 @@ describe("SqlEditorWorkspace mount contract", () => {
 
     expect(editorFocusCalls).toEqual([{ tabId: "tab-a", range: { from: 0, to: 8 } }]);
 
+    app.unmount();
+    host.remove();
+  });
+
+  it("hides the shared result pane while a non-query tab is active and restores it for query tabs", async () => {
+    const store = useQueryStore();
+    store.tabs = [tab("tab-a"), dataTab("tab-data")];
+    store.activeTabId = "tab-a";
+    store.groups = [{ id: "g1", tabIds: ["tab-a", "tab-data"], activeTabId: "tab-a" }];
+    store.focusedGroupId = "g1";
+    store.orientation = "vertical";
+    store.sizes = [100];
+
+    const host = createHost();
+    const app = createApp(SqlEditorWorkspace, {
+      activeTab: tab("tab-a"),
+      activeConnection: undefined,
+      executableSql: "SELECT 1",
+      activeOutputView: "result",
+      formatSqlRequest: null,
+      compressSqlRequest: null,
+      selectedSql: "",
+      cursorPos: 0,
+      blockDangerousRedisCommands: false,
+    });
+    app.use(pinia);
+    app.use(i18n);
+    app.mount(host);
+    await nextTick();
+
+    expect(host.querySelector('[data-test="result-surface"]')).not.toBeNull();
+
+    store.activeTabId = "tab-data";
+    await nextTick();
+    // The leave transition keeps the surface in the DOM for one more frame
+    // before unmounting it (CSS durations collapse to zero in the test env).
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(host.querySelector("[data-shared-result-surface]")).toBeNull();
+    // Outer editor pane + always-mounted result pane (collapsed to size 0)
+    // + one pane per group.
+    expect(host.querySelectorAll(".pane-stub")).toHaveLength(3);
+
+    store.activeTabId = "tab-a";
+    await nextTick();
+
+    expect(host.querySelector('[data-test="result-surface"]')).not.toBeNull();
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("routes Mod+R grid targets to the shared result surface only while a query tab is active", async () => {
+    const store = useQueryStore();
+    store.tabs = [tab("tab-a"), dataTab("tab-data")];
+    store.activeTabId = "tab-a";
+    store.groups = [{ id: "g1", tabIds: ["tab-a", "tab-data"], activeTabId: "tab-a" }];
+    store.focusedGroupId = "g1";
+    store.orientation = "vertical";
+    store.sizes = [100];
+
+    const host = createHost();
+    const app = createApp(SqlEditorWorkspace, {
+      activeTab: tab("tab-a"),
+      activeConnection: undefined,
+      executableSql: "SELECT 1",
+      activeOutputView: "result",
+      formatSqlRequest: null,
+      compressSqlRequest: null,
+      selectedSql: "",
+      cursorPos: 0,
+      blockDangerousRedisCommands: false,
+    });
+    app.use(pinia);
+    app.use(i18n);
+    const vm = app.mount(host) as any;
+    await nextTick();
+
+    // Query tab: grid targets inside the shared result surface route to it.
+    const resultGridEl = document.createElement("div");
+    resultGridEl.setAttribute("data-grid-root", "");
+    host.querySelector('[data-test="result-surface"]')?.appendChild(resultGridEl);
+    expect(vm.handleModRTarget(resultGridEl)).toBe(true);
+    expect(resultHandleModRCalls).toEqual([resultGridEl]);
+    expect(groupHandleModRCalls).toEqual([]);
+
+    // Query tab: the cell-detail editor is portaled to body, so it cannot be
+    // resolved through the DOM — it still routes to the shared result surface.
+    const portalEl = document.createElement("div");
+    portalEl.setAttribute("data-cell-detail-editor-root", "");
+    document.body.appendChild(portalEl);
+    expect(vm.handleModRTarget(portalEl)).toBe(true);
+    expect(resultHandleModRCalls).toEqual([resultGridEl, portalEl]);
+
+    // Data tab: the grid and its cell-detail dialog belong to the group.
+    groupHandleModRCalls.length = 0;
+    resultHandleModRCalls.length = 0;
+    store.activeTabId = "tab-data";
+    await nextTick();
+
+    const dataGridEl = document.createElement("div");
+    dataGridEl.setAttribute("data-grid-root", "");
+    host.querySelector('[data-test="editor-group"]')?.appendChild(dataGridEl);
+    expect(vm.handleModRTarget(dataGridEl)).toBe(true);
+    expect(groupHandleModRCalls).toEqual([dataGridEl]);
+    expect(vm.handleModRTarget(portalEl)).toBe(true);
+    expect(groupHandleModRCalls).toEqual([dataGridEl, portalEl]);
+    expect(resultHandleModRCalls).toEqual([]);
+
+    portalEl.remove();
+    app.unmount();
+    host.remove();
+  });
+
+  it("routes cell-detail search to the group's grid while a data tab is active", async () => {
+    const store = useQueryStore();
+    store.tabs = [dataTab("tab-data")];
+    store.activeTabId = "tab-data";
+    store.groups = [{ id: "g1", tabIds: ["tab-data"], activeTabId: "tab-data" }];
+    store.focusedGroupId = "g1";
+    store.orientation = "vertical";
+    store.sizes = [100];
+
+    const host = createHost();
+    const app = createApp(SqlEditorWorkspace, {
+      activeTab: dataTab("tab-data"),
+      activeConnection: undefined,
+      executableSql: "",
+      activeOutputView: "result",
+      formatSqlRequest: null,
+      compressSqlRequest: null,
+      selectedSql: "",
+      cursorPos: 0,
+      blockDangerousRedisCommands: false,
+    });
+    app.use(pinia);
+    app.use(i18n);
+    const vm = app.mount(host) as any;
+    await nextTick();
+
+    const portalEl = document.createElement("div");
+    portalEl.setAttribute("data-cell-detail-editor-root", "");
+    document.body.appendChild(portalEl);
+    expect(vm.focusSearch(portalEl)).toBe(true);
+    expect(groupFocusSearchCalls.length).toBe(1);
+    expect(resultFocusSearchCalls).toEqual([]);
+
+    portalEl.remove();
     app.unmount();
     host.remove();
   });

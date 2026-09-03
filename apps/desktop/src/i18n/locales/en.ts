@@ -1424,7 +1424,6 @@ export default {
   tabs: {
     sql: "SQL",
     emptyGroup: "No open tabs",
-    noQueryResult: "No query result",
     table: "Table",
     tableData: "Table Data",
     redis: "Redis",

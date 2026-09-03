@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, useAttrs } from "vue";
-import { useI18n } from "vue-i18n";
+import { computed, nextTick, onMounted, ref, useAttrs } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
+import "./sqlEditorWorkspace.css";
 import { useQueryStore } from "@/stores/queryStore";
 import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/backend/safeStorage";
 import EditorGroup from "./EditorGroup.vue";
@@ -20,8 +20,6 @@ const emit = defineEmits<
     "toggle-zen-mode": [];
   }
 >();
-
-const { t } = useI18n();
 
 const attrs = useAttrs();
 const workspaceClass = computed(() => (typeof attrs.class === "string" ? attrs.class : undefined));
@@ -45,7 +43,9 @@ defineExpose({
     const element = commandTargetElement(target);
     // The shared result pane (and its Teleported cell-detail dialog) lives
     // outside the group DOM, so route its search before the group fallback.
-    if (element?.closest("[data-shared-result-surface], [data-cell-detail-editor-root]")) {
+    // A data-mode cell-detail dialog is portaled to body too but belongs to
+    // the group's grid — indistinguishable in the DOM, hence the gate.
+    if (element?.closest("[data-shared-result-surface]") || (showSharedResult.value && element?.closest("[data-cell-detail-editor-root]"))) {
       return resultSurfaceRef.value?.focusSearch() ?? false;
     }
     const group = groupForElement(element) ?? activeEditorGroup();
@@ -70,8 +70,11 @@ defineExpose({
   refreshQueryEditorCompletionCache: () => activeEditorGroup()?.refreshQueryEditorCompletionCache() ?? false,
   handleModRTarget: (target: Element) => {
     // DataGrid, Elasticsearch JSON, and the cell-detail editor (Teleported
-    // outside the grid DOM) all belong to the shared result surface.
-    if (target.closest("[data-grid-root], [data-elasticsearch-json-response-root], [data-cell-detail-editor-root]")) {
+    // outside the grid DOM) belong to the shared result surface while a query
+    // tab is active. Data-mode grids live inside a group's ContentArea and
+    // their cell-detail dialogs are portaled to body just the same, so route
+    // those to the group instead of the (unmounted) shared result surface.
+    if (showSharedResult.value && target.closest("[data-grid-root], [data-elasticsearch-json-response-root], [data-cell-detail-editor-root]")) {
       return resultSurfaceRef.value?.handleModRTarget(target) ?? false;
     }
     const group = groupForElement(target) ?? activeEditorGroup();
@@ -104,7 +107,28 @@ const SHARED_RESULT_PANE_STORAGE_KEY = "dbx-shared-results-pane-size";
 const storedResultPaneSize = Number(safeLocalStorageGet(SHARED_RESULT_PANE_STORAGE_KEY));
 const resultPaneSize = ref(Number.isFinite(storedResultPaneSize) && storedResultPaneSize >= SHARED_RESULT_PANE_MIN_SIZE && storedResultPaneSize <= SHARED_RESULT_PANE_MAX_SIZE ? storedResultPaneSize : SHARED_RESULT_PANE_DEFAULT_SIZE);
 const showResultPane = ref(true);
-const editorPaneSize = computed(() => 100 - (showResultPane.value ? resultPaneSize.value : 0));
+// The result pane stays mounted and animates its size between the stored
+// split and 0, so collapsing/expanding glides instead of jumping: the stock
+// splitpanes pane transition is re-enabled for this workspace in
+// sqlEditorWorkspace.css (globals.css kills it for horizontal splitpanes).
+const resultPaneTargetSize = computed(() => (showSharedResult.value && showResultPane.value ? resultPaneSize.value : 0));
+const editorPaneSize = computed(() => 100 - resultPaneTargetSize.value);
+// Entrance choreography is hydration-gated: groups present at first render
+// never animate (no load choreography); only groups created later — by a
+// split — materialize from their owner's side of the divider.
+const hydrated = ref(false);
+const initialGroupIds = new Set(queryStore.groups.map((group) => group.id));
+onMounted(() => {
+  void nextTick(() => {
+    hydrated.value = true;
+  });
+});
+function paneEnterClass(groupId: string): string | undefined {
+  if (!hydrated.value || initialGroupIds.has(groupId)) {
+    return undefined;
+  }
+  return queryStore.orientation === "horizontal" ? "workspace-pane-enter workspace-pane-enter--from-top" : "workspace-pane-enter workspace-pane-enter--from-left";
+}
 function onSharedResultResized(payload: { panes: { size: number }[] }) {
   const resultPane = payload.panes[1];
   if (resultPane?.size != null && resultPane.size >= SHARED_RESULT_PANE_MIN_SIZE && resultPane.size <= SHARED_RESULT_PANE_MAX_SIZE) {
@@ -161,7 +185,7 @@ function handleFocusStatement(tabId: string, range: StatementRange | null): bool
 
 <template>
   <div class="sql-editor-workspace flex h-full min-h-0 flex-1 flex-col overflow-hidden" :class="workspaceClass">
-    <Splitpanes horizontal class="sql-editor-workspace-split flex-1 min-h-0" @resized="onSharedResultResized">
+    <Splitpanes horizontal class="sql-editor-workspace-split flex-1 min-h-0" :class="{ 'result-pane-collapsed': resultPaneTargetSize === 0 }" @resized="onSharedResultResized">
       <Pane class="min-h-0 min-w-0" :size="editorPaneSize" :min-size="100 - SHARED_RESULT_PANE_MAX_SIZE">
         <Splitpanes
           :horizontal="queryStore.orientation === 'horizontal'"
@@ -172,7 +196,7 @@ function handleFocusStatement(tabId: string, range: StatementRange | null): bool
             }
           "
         >
-          <Pane v-for="group in queryStore.groups" :key="group.id" :size="queryStore.sizes[queryStore.groups.indexOf(group)] ?? undefined" :min-size="10" class="min-h-0 min-w-0">
+          <Pane v-for="group in queryStore.groups" :key="group.id" :size="queryStore.sizes[queryStore.groups.indexOf(group)] ?? undefined" :min-size="10" class="min-h-0 min-w-0" :class="paneEnterClass(group.id)">
             <EditorGroup
               :ref="(el: unknown) => setGroupRef(group.id, el)"
               :group-id="group.id"
@@ -188,28 +212,26 @@ function handleFocusStatement(tabId: string, range: StatementRange | null): bool
           </Pane>
         </Splitpanes>
       </Pane>
-      <Pane class="min-h-0" :size="showResultPane ? resultPaneSize : 0" :min-size="showResultPane ? SHARED_RESULT_PANE_MIN_SIZE : 0" :max-size="SHARED_RESULT_PANE_MAX_SIZE">
-        <div v-if="showSharedResult && activeTab" data-shared-result-surface class="h-full min-h-0 overflow-hidden">
-          <QueryResultSurface
-            v-if="showResultPane"
-            ref="resultSurfaceRef"
-            v-bind="resultSurfaceBindings"
-            class="h-full"
-            @preview-statement="
-              (tabId: string, range: { from: number; to: number } | null) => {
-                handlePreviewStatement(tabId, range);
-              }
-            "
-            @focus-statement="
-              (tabId: string, range: { from: number; to: number } | null) => {
-                handleFocusStatement(tabId, range);
-              }
-            "
-          />
-        </div>
-        <div v-else class="flex h-full items-center justify-center text-sm text-muted-foreground">
-          {{ activeTab ? t("tabs.noQueryResult") : "" }}
-        </div>
+      <Pane class="min-h-0" :size="resultPaneTargetSize" :min-size="resultPaneTargetSize > 0 ? SHARED_RESULT_PANE_MIN_SIZE : 0" :max-size="SHARED_RESULT_PANE_MAX_SIZE">
+        <Transition name="result-surface">
+          <div v-if="showSharedResult && showResultPane" data-shared-result-surface class="h-full min-h-0 overflow-hidden">
+            <QueryResultSurface
+              ref="resultSurfaceRef"
+              v-bind="resultSurfaceBindings"
+              class="h-full"
+              @preview-statement="
+                (tabId: string, range: { from: number; to: number } | null) => {
+                  handlePreviewStatement(tabId, range);
+                }
+              "
+              @focus-statement="
+                (tabId: string, range: { from: number; to: number } | null) => {
+                  handleFocusStatement(tabId, range);
+                }
+              "
+            />
+          </div>
+        </Transition>
       </Pane>
     </Splitpanes>
   </div>

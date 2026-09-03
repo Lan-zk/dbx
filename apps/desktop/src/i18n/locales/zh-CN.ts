@@ -1347,7 +1347,6 @@ export default withEnglishFallback({
   },
   tabs: {
     sql: "SQL",
-    noQueryResult: "没有查询结果",
     emptyGroup: "暂无打开的页签",
     table: "表",
     tableData: "数据表",

@@ -1403,7 +1403,6 @@ export default withEnglishFallback({
   },
   tabs: {
     sql: "SQL",
-    noQueryResult: "沒有查詢結果",
     emptyGroup: "暫無開啟的頁籤",
     table: "資料表",
     tableData: "資料表",

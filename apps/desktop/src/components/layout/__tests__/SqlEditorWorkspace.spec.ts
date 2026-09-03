@@ -80,4 +80,23 @@ describe("SQL editor workspace single-group tracer bullet", () => {
     expect(editorSurfaceSource).toContain('v-bind="bindings"');
     expect(resultSurfaceSource).toContain('v-bind="bindings"');
   });
+
+  it("animates layout transitions for split groups and the shared result surface", () => {
+    const workspaceCssSource = readFileSync(new URL("../sqlEditorWorkspace.css", import.meta.url), "utf8");
+    expect(workspaceSource).toContain('import "./sqlEditorWorkspace.css"');
+    // Split-created group panes emerge from the divider side; hydration-gated
+    // so the restored layout never plays load choreography.
+    expect(workspaceSource).toContain("paneEnterClass");
+    expect(workspaceSource).toContain("workspace-pane-enter");
+    expect(workspaceCssSource).toContain("@keyframes dbx-workspace-pane-in");
+    // The result pane stays mounted and collapses via its size; the surface
+    // fades through a Vue transition while the splitter hides.
+    expect(workspaceSource).toContain("resultPaneTargetSize");
+    expect(workspaceSource).toContain('name="result-surface"');
+    expect(workspaceSource).toContain("result-pane-collapsed");
+    expect(workspaceCssSource).toContain(".result-surface-enter-active");
+    expect(workspaceCssSource).toContain(".result-surface-leave-active");
+    // Motion degrades to instant under prefers-reduced-motion.
+    expect(workspaceCssSource).toContain("@media (prefers-reduced-motion: reduce)");
+  });
 });
