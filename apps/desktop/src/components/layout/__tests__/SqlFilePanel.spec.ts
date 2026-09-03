@@ -39,10 +39,33 @@ describe("SqlFilePanel file renaming", () => {
     expect(renameFunction).toContain("queryStore.relocateExternalSqlFilePath(target.entry.path, nextPath)");
     expect(renameFunction).not.toContain("readExternalSqlFileSnapshot(nextPath)");
   });
+
+  it("preserves non-SQL extensions while keeping SQL rename convenience", () => {
+    expect(panelSource).toContain("normalizedRenamedFileName(fileNameInput.value, target.entry.name)");
+    expect(panelSource).toContain("isSqlFilePath(currentName) ? normalizedSqlFileName(trimmed) : trimmed");
+  });
 });
 
 describe("SqlFilePanel directory actions", () => {
   it("shows a new SQL file icon for nested directories", () => {
     expect(panelSource).toContain('@click.stop="openCreateDialog(folder.path, entry.path)"');
+  });
+});
+
+describe("SqlFilePanel file filter", () => {
+  it("restores the previous filter when the backend rejects the saved pattern", () => {
+    expect(panelSource).toContain('message?.startsWith("Invalid file filter")');
+    expect(panelSource).toContain("saveSqlFileFilter(previousFilter)");
+    expect(panelSource).toContain('t("sqlFileTree.filterInvalid"');
+  });
+
+  it("renders the translated filter placeholder", () => {
+    expect(panelSource).toContain("t('sqlFileTree.fileFilterPlaceholder')");
+    expect(panelSource).not.toContain("const fileFilterPlaceholder =");
+  });
+
+  it("offers SQL execution only for SQL files", () => {
+    expect(panelSource).toContain("if (isSqlFilePath(target.entry.name))");
+    expect(panelSource).toContain("isExternalSqlFileTooLargeError(e) && isSqlFilePath(path)");
   });
 });

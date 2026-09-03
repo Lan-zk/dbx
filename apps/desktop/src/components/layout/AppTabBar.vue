@@ -17,6 +17,8 @@ const props = defineProps<{
   settingsPageOpen?: boolean;
   settingsPageActive?: boolean;
   agentDriverUpdateCount?: number;
+  detachedDropTarget?: boolean;
+  canDetachTabs?: boolean;
 }>();
 
 const emit = defineEmits<{

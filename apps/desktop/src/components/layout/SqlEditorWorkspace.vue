@@ -80,7 +80,9 @@ defineExpose({
   requestQueryEditorExecute: () => activeEditorGroup()?.requestQueryEditorExecute() ?? false,
   captureQueryEditorExecutionSnapshot: () => activeEditorGroup()?.captureQueryEditorExecutionSnapshot(),
   requestQueryEditorExecuteInNewResultTab: () => activeEditorGroup()?.requestQueryEditorExecuteInNewResultTab() ?? false,
+  requestQueryEditorPreviewChanges: (stackSql?: string) => activeEditorGroup()?.requestQueryEditorPreviewChanges(stackSql) ?? false,
   shouldBlockQueryEditorExecutionShortcut: (event: KeyboardEvent) => activeEditorGroup()?.shouldBlockQueryEditorExecutionShortcut(event) ?? false,
+  cancelQueryEditorExecutionViewport: (requestId: number) => activeEditorGroup()?.cancelQueryEditorExecutionViewport(requestId) ?? false,
   acceptQueryEditorExecutionViewport: (requestId: number) => activeEditorGroup()?.acceptQueryEditorExecutionViewport(requestId) ?? false,
   pasteClipboardAsSqlInCondition: () => activeEditorGroup()?.pasteClipboardAsSqlInCondition() ?? Promise.resolve(false),
   applyTableStructureChanges: () => {

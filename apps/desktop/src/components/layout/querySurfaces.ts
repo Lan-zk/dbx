@@ -19,7 +19,9 @@ export interface QueryEditorSurfaceHandle {
   requestQueryEditorExecute(): boolean;
   captureQueryEditorExecutionSnapshot(): SqlExecutionSnapshot | undefined;
   requestQueryEditorExecuteInNewResultTab(): boolean;
+  requestQueryEditorPreviewChanges(stackSql?: string): Promise<boolean>;
   shouldBlockQueryEditorExecutionShortcut(event: KeyboardEvent): boolean;
+  cancelQueryEditorExecutionViewport(requestId: number): boolean;
   acceptQueryEditorExecutionViewport(requestId: number): boolean;
   pasteClipboardAsSqlInCondition(): Promise<boolean>;
   applyTableStructureChanges(): Promise<boolean>;
@@ -61,6 +63,7 @@ export interface ContentAreaSurfaceEmits {
   "update:activeOutputView": [tabId: string, value: "result" | "summary" | "explain" | "chart" | "messages"];
   fixWithAi: [tabId: string, errorMessage: string];
   sendSelectionToAi: [tabId: string, sql: string];
+  previewChangesAvailable: [tabId: string, value: boolean];
   execute: [tabId: string, sqlOverride?: SqlExecutionOverride];
   executeInNewResultTab: [tabId: string, sqlOverride?: SqlExecutionOverride];
   saveSql: [tabId: string];

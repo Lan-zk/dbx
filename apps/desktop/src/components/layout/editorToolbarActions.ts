@@ -27,6 +27,7 @@ export interface EditorToolbarActions {
   importResultArchive(): void;
   pasteSqlInCondition(): void;
   multiExecute(): void;
+  previewChanges(tabId: string): void;
   changeConnection(tabId: string, connectionId: string): void;
   changeCatalog(tabId: string, catalog: string | undefined, database: string): void;
   changeDatabase(tabId: string, database: string): void;
@@ -62,6 +63,7 @@ export function createNoopEditorToolbarActions(): EditorToolbarActions {
     importResultArchive: noop,
     pasteSqlInCondition: noop,
     multiExecute: noop,
+    previewChanges: noop,
     changeConnection: noop,
     changeCatalog: noop,
     changeDatabase: noop,

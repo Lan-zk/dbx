@@ -63,7 +63,9 @@ defineExpose({
   requestQueryEditorExecute: () => activeSurfaceRef.value?.requestQueryEditorExecute() ?? false,
   captureQueryEditorExecutionSnapshot: () => activeSurfaceRef.value?.captureQueryEditorExecutionSnapshot(),
   requestQueryEditorExecuteInNewResultTab: () => activeSurfaceRef.value?.requestQueryEditorExecuteInNewResultTab() ?? false,
+  requestQueryEditorPreviewChanges: async (stackSql?: string) => (await activeSurfaceRef.value?.requestQueryEditorPreviewChanges(stackSql)) ?? false,
   shouldBlockQueryEditorExecutionShortcut: (event: KeyboardEvent) => activeSurfaceRef.value?.shouldBlockQueryEditorExecutionShortcut(event) ?? false,
+  cancelQueryEditorExecutionViewport: (requestId: number) => activeSurfaceRef.value?.cancelQueryEditorExecutionViewport(requestId) ?? false,
   acceptQueryEditorExecutionViewport: (requestId: number) => activeSurfaceRef.value?.acceptQueryEditorExecutionViewport(requestId) ?? false,
   pasteClipboardAsSqlInCondition: () => activeSurfaceRef.value?.pasteClipboardAsSqlInCondition() ?? Promise.resolve(false),
   applyTableStructureChanges: () => activeSurfaceRef.value?.applyTableStructureChanges() ?? Promise.resolve(false),
@@ -134,6 +136,7 @@ const groupExecutableSql = computed(() => {
       @execute-pointer-down="toolbar.captureExecutionSnapshot()"
       @toolbar-execute="toolbar.toolbarExecute($event)"
       @multi-execute="toolbar.multiExecute()"
+      @preview-changes="activeTab && toolbar.previewChanges(activeTab.id)"
       @cancel="activeTab && toolbar.cancelExecution(activeTab.id)"
       @explain="activeTab && toolbar.explain(activeTab.id)"
       @format-sql="activeTab && toolbar.formatSql(activeTab.id)"
