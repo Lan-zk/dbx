@@ -40,6 +40,7 @@ export const contentSurfaceEventNames = [
   "focusStatement",
   "openSettings",
   "openConnectionSettings",
+  "toggleZenMode",
 ] as const satisfies Array<keyof ContentAreaSurfaceEmits>;
 
 export type ContentSurfaceEventName = (typeof contentSurfaceEventNames)[number];

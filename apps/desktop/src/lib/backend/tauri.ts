@@ -8,6 +8,7 @@ import { appendDebugLog, isDebugLoggingEnabled } from "@/lib/backend/debugLog";
 import { decodeMeilisearchDocumentPage, decodeMeilisearchSearchResult, type MeilisearchDocumentPage, type MeilisearchDocumentPageWire, type MeilisearchSearchResult, type MeilisearchSearchWireResult } from "@/lib/backend/meilisearchTransport";
 import type { XuguTablespaceInfo } from "@/types/database";
 import type { CreatedKey, EnqueuedTaskSummary, KeyCreateInput, KeyListItem, KeyPage, KeyUpdateInput, MeilisearchSystemOverview, MeilisearchTask, TaskListInput, TaskPage, TaskSelector } from "@/types/meilisearchManagement";
+import type { CsvQuoteMode } from "@/lib/export/csvQuoteMode";
 
 /** Normalize Tauri rejections once at the public backend boundary. */
 async function invokeBackend<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -4837,6 +4838,7 @@ export interface TableExportRequest {
   tableName: string;
   filePath: string;
   format: "csv" | "xlsx" | "json" | "markdown" | "sql" | "txt";
+  csvQuoteMode?: CsvQuoteMode;
   columns?: string[];
   columnTypes?: Array<string | null | undefined>;
   columnComments?: Array<string | null> | null;
@@ -4860,6 +4862,7 @@ export interface TableCsvExportOptions {
   columns?: string[];
   pageSize?: number;
   timeoutSecs?: number;
+  csvQuoteMode?: CsvQuoteMode;
 }
 
 export interface TableExportProgress {
@@ -4884,6 +4887,7 @@ export interface QueryResultExportRequest {
   useAgentCursor: boolean;
   filePath: string;
   format: "csv" | "xlsx" | "txt" | "sql";
+  csvQuoteMode?: CsvQuoteMode;
   includeSqlSheet?: boolean;
   pageSize: number;
   rowLimit?: number | null;
@@ -5027,12 +5031,13 @@ export async function recordDatabaseExportDestination(directory: string): Promis
   await invoke("record_database_export_destination", { directory });
 }
 
-export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[]): Promise<void> {
+export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[], csvQuoteMode: CsvQuoteMode = "all"): Promise<void> {
   return invoke("export_query_result_csv", {
     request: {
       filePath,
       columns,
       rows,
+      csvQuoteMode,
     },
   });
 }

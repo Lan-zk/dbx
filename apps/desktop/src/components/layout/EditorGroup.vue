@@ -47,6 +47,7 @@ const surfaceProps = computed<ContentAreaSurfaceProps>(() => ({
   selectedSql: props.selectedSql,
   cursorPos: props.cursorPos,
   blockDangerousRedisCommands: props.blockDangerousRedisCommands,
+  zenMode: props.zenMode,
 }));
 const contentEmits = createContentSurfaceEventForwarders(emit);
 const surfaceBindings = computed(() => ({ ...surfaceProps.value, ...contentEmits }));

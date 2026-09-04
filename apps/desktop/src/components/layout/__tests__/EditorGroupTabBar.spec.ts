@@ -25,7 +25,7 @@ describe("EditorGroupTabBar compatibility with AppTabBar", () => {
   });
 
   it("cleans up drag listeners on cancel, blur, and unmount", () => {
-    expect(source).toContain("function cleanupTabDrag()");
+    expect(source).toContain("function cleanupTabDrag(event?: Event)");
     expect(source).toContain('window.addEventListener("pointercancel", cleanupTabDrag)');
     expect(source).toContain('window.addEventListener("blur", cleanupTabDrag)');
     expect(source).toContain("onUnmounted(cleanupTabDrag)");

@@ -50,6 +50,7 @@ export interface ContentAreaSurfaceProps {
   selectedSql: string;
   cursorPos: number;
   blockDangerousRedisCommands: boolean;
+  zenMode?: boolean;
 }
 
 /**
@@ -93,4 +94,5 @@ export interface ContentAreaSurfaceEmits {
   focusStatement: [tabId: string, range: StatementRange | null];
   openSettings: [initialTab?: string, initialSection?: string];
   openConnectionSettings: [connectionId: string, initialTab: "advanced"];
+  toggleZenMode: [];
 }

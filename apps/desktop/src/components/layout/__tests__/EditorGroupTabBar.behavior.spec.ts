@@ -39,17 +39,6 @@ vi.mock("@/components/icons/DatabaseIcon.vue", () => ({
 import EditorGroupTabBar from "../EditorGroupTabBar.vue";
 import { useQueryStore } from "@/stores/queryStore";
 
-function tab(id: string) {
-  return {
-    id,
-    title: id,
-    connectionId: "conn-1",
-    database: "db",
-    sql: "SELECT 1",
-    mode: "query",
-  } as const;
-}
-
 function createHost(): HTMLDivElement {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -121,6 +110,7 @@ function pointerDownOn(element: HTMLElement) {
     new PointerEvent("pointerdown", {
       bubbles: true,
       button: 0,
+      buttons: 1,
       clientX: 10,
       clientY: 10,
       pointerId: 1,
@@ -129,11 +119,11 @@ function pointerDownOn(element: HTMLElement) {
 }
 
 function pointerMoveTo(x: number, y: number) {
-  window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x, clientY: y, pointerId: 1 }));
+  window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX: x, clientY: y, pointerId: 1 }));
 }
 
 function pointerUpAt(x: number, y: number) {
-  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x, clientY: y, pointerId: 1 }));
+  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, buttons: 1, clientX: x, clientY: y, pointerId: 1 }));
 }
 
 function fakeDropTarget(tabId: string, groupId: string): HTMLElement {
@@ -196,6 +186,126 @@ describe("EditorGroupTabBar behavior", () => {
     pill.click();
     await settle();
     expect(activated).toEqual([secondId]);
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("does not arm a drag when the primary button is not held", async () => {
+    const store = useQueryStore();
+    const firstId = store.createTab("pg-1", "app", "Query 1", "query");
+    const secondId = store.createTab("pg-1", "app", "Query 2", "query");
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, [firstId, secondId], firstId, pinia);
+    await settle();
+
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(null);
+    // macOS reports a trackpad tap as a mouse pointer with button=0 but buttons=0.
+    tabPill(host, secondId).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, buttons: 0, clientX: 10, clientY: 10, pointerId: 1 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 0, clientX: 80, clientY: 60, pointerId: 1 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 80, clientY: 60, pointerId: 1 }));
+    await settle();
+
+    expect(store.groups.find((group) => group.id === mainGroup.id)?.tabIds).toContain(secondId);
+    expect(document.body.style.cursor).toBe("");
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("cancels a pending drag when the primary button is released before movement", async () => {
+    const store = useQueryStore();
+    const firstId = store.createTab("pg-1", "app", "Query 1", "query");
+    const secondId = store.createTab("pg-1", "app", "Query 2", "query");
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, [firstId, secondId], firstId, pinia);
+    await settle();
+
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(null);
+    const pill = tabPill(host, secondId);
+    pointerDownOn(pill);
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 0, clientX: 80, clientY: 10, pointerId: 1 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX: 90, clientY: 10, pointerId: 1 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 90, clientY: 10, pointerId: 1 }));
+    await settle();
+
+    expect(store.groups.find((group) => group.id === mainGroup.id)?.tabIds).toContain(secondId);
+    expect(document.body.style.cursor).toBe("");
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("cancels an active drag when the primary button is no longer held", async () => {
+    const store = useQueryStore();
+    const firstId = store.createTab("pg-1", "app", "Query 1", "query");
+    const secondId = store.createTab("pg-1", "app", "Query 2", "query");
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, [firstId, secondId], firstId, pinia);
+    await settle();
+
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(null);
+    const pill = tabPill(host, secondId);
+    pointerDownOn(pill);
+    pointerMoveTo(80, 60);
+    expect(document.body.style.cursor).toBe("grabbing");
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 0, clientX: 90, clientY: 60, pointerId: 1 }));
+    await settle();
+
+    expect(document.body.style.cursor).toBe("");
+    expect(document.body.style.userSelect).toBe("");
+    expect(store.groups.find((group) => group.id === mainGroup.id)?.tabIds).toContain(secondId);
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("ignores movement from a different pointer", async () => {
+    const store = useQueryStore();
+    const firstId = store.createTab("pg-1", "app", "Query 1", "query");
+    const secondId = store.createTab("pg-1", "app", "Query 2", "query");
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, [firstId, secondId], firstId, pinia);
+    await settle();
+
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(null);
+    const pill = tabPill(host, secondId);
+    pill.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, buttons: 1, clientX: 10, clientY: 10, pointerId: 7 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 1, clientX: 90, clientY: 10, pointerId: 8 }));
+    await settle();
+
+    expect(document.body.style.cursor).toBe("");
+    expect(store.groups.find((group) => group.id === mainGroup.id)?.tabIds).toContain(secondId);
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 90, clientY: 10, pointerId: 7 }));
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("clears completed-drag click suppression on a later trackpad tap", async () => {
+    const store = useQueryStore();
+    const firstId = store.createTab("pg-1", "app", "Query 1", "query");
+    const secondId = store.createTab("pg-1", "app", "Query 2", "query");
+    const mainGroup = store.groups[0];
+    const activated: string[] = [];
+    const { app, host } = mountBar(mainGroup.id, [firstId, secondId], firstId, pinia, (tabId) => activated.push(tabId));
+    await settle();
+
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(null);
+    const pill = tabPill(host, secondId);
+    pointerDownOn(pill);
+    pointerMoveTo(80, 60);
+    pointerUpAt(80, 60);
+
+    // The completed drag left click suppression armed; a trackpad tap
+    // (pointerdown with buttons=0) must consume it without arming a drag.
+    pill.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, buttons: 0, clientX: 10, clientY: 10, pointerId: 1 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons: 0, clientX: 10, clientY: 12, pointerId: 1 }));
+    pill.click();
+    await settle();
+
+    expect(activated).toEqual([secondId]);
+    expect(document.body.style.cursor).toBe("");
 
     app.unmount();
     host.remove();

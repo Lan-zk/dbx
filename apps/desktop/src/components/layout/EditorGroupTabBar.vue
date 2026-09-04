@@ -16,6 +16,7 @@ const groupTabDrag = reactive({
   targetGroupId: null as string | null,
   targetTabId: null as string | null,
   position: null as "before" | "after" | null,
+  pointerId: null as number | null,
 });
 
 let groupTabDragGhost: HTMLElement | null = null;
@@ -206,6 +207,11 @@ function handleTabPointerDown(event: PointerEvent, tab: QueryTab) {
     // Touch does not arm the drag; the strip's native scroll owns the gesture.
     return;
   }
+  // macOS reports a trackpad tap as a mouse pointer with button=0, but
+  // buttons=0. It is a click gesture, not a held primary-button drag.
+  if ((event.buttons & 1) !== 1) {
+    return;
+  }
   groupTabDragSourceEl = event.currentTarget as HTMLElement | null;
   groupTabDrag.active = false;
   groupTabDrag.tabId = tab.id;
@@ -216,6 +222,7 @@ function handleTabPointerDown(event: PointerEvent, tab: QueryTab) {
   groupTabDrag.targetGroupId = null;
   groupTabDrag.targetTabId = null;
   groupTabDrag.position = null;
+  groupTabDrag.pointerId = event.pointerId;
   window.addEventListener("pointermove", handleTabPointerMove);
   window.addEventListener("pointerup", handleTabPointerUp);
   window.addEventListener("pointercancel", cleanupTabDrag);
@@ -315,20 +322,18 @@ function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
     // a new layout — at the four-group cap, or with a single open tab (the
     // store rejects with the same rules). Every tab type can split: groups
     // host non-query tabs via ContentArea, same as moving them between groups.
-    ...[
-      {
-        label: t("contextMenu.splitRight"),
-        action: () => queryStore.splitTabRight(tab.id),
-        disabled: splitUnavailable.value,
-        icon: ArrowRight,
-      },
-      {
-        label: t("contextMenu.splitDown"),
-        action: () => queryStore.splitTabDown(tab.id),
-        disabled: splitUnavailable.value,
-        icon: ArrowDown,
-      },
-    ],
+    {
+      label: t("contextMenu.splitRight"),
+      action: () => queryStore.splitTabRight(tab.id),
+      disabled: splitUnavailable.value,
+      icon: ArrowRight,
+    },
+    {
+      label: t("contextMenu.splitDown"),
+      action: () => queryStore.splitTabDown(tab.id),
+      disabled: splitUnavailable.value,
+      icon: ArrowDown,
+    },
     ...(canChangeOrientation.value
       ? [
           {
@@ -397,7 +402,11 @@ function handleTabClick(tab: QueryTab) {
   activateTab(tab.id);
 }
 
-function cleanupTabDrag() {
+function cleanupTabDrag(event?: Event) {
+  const trackedPointerId = groupTabDrag.pointerId;
+  if (event && "pointerId" in event && trackedPointerId !== null && (event as PointerEvent).pointerId !== trackedPointerId) {
+    return;
+  }
   window.removeEventListener("pointermove", handleTabPointerMove);
   window.removeEventListener("pointerup", handleTabPointerUp);
   window.removeEventListener("pointercancel", cleanupTabDrag);
@@ -412,6 +421,7 @@ function cleanupTabDrag() {
     groupTabDrag.targetGroupId = null;
     groupTabDrag.targetTabId = null;
     groupTabDrag.position = null;
+    groupTabDrag.pointerId = null;
     groupTabDragSourceEl = null;
     removeTabDragGhost();
     document.body.style.cursor = "";
@@ -422,6 +432,15 @@ function cleanupTabDrag() {
 function handleTabPointerMove(event: PointerEvent) {
   const drag = groupTabDrag;
   if (!drag.tabId) {
+    return;
+  }
+  if (drag.pointerId !== null && event.pointerId !== drag.pointerId) {
+    return;
+  }
+  // macOS reports a trackpad tap as a mouse pointer with button=0, but
+  // buttons=0. It is a click gesture, not a held primary-button drag.
+  if ((event.buttons & 1) !== 1) {
+    cleanupTabDrag();
     return;
   }
   if (!drag.active) {
@@ -455,6 +474,9 @@ function handleTabPointerMove(event: PointerEvent) {
 }
 
 function handleTabPointerUp(event: PointerEvent) {
+  if (groupTabDrag.pointerId !== null && event.pointerId !== groupTabDrag.pointerId) {
+    return;
+  }
   const drag = {
     active: groupTabDrag.active,
     tabId: groupTabDrag.tabId,
