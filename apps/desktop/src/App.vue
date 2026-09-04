@@ -3467,7 +3467,7 @@ onUnmounted(() => {
                   </DialogFooter>
                 </DialogContent>
               </Dialog>
-              <div v-if="queryStore.tabs.length > 0" v-show="!driverStoreActive && !settingsStore.settingsPageActive" class="flex flex-col flex-1 min-h-0">
+              <div class="flex min-h-0 min-w-0 flex-1 flex-col">
                 <DriverStorePage v-if="driverStoreTabOpen" v-show="driverStoreActive" v-model:active-tab="driverStoreActiveTab" class="flex-1 min-h-0" :update-notifications-enabled="updateNotificationsEnabled" :focus-target="driverStoreFocus" @update-count-change="updateAgentDriverUpdateCount" />
                 <EditorSettingsPage
                   v-if="settingsPageTabOpen"
@@ -3485,127 +3485,129 @@ onUnmounted(() => {
                   @update:open="(open: boolean) => (open ? activateSettingsPage() : closeSettingsPage())"
                   @check-updates="checkUpdates()"
                 />
-                <SqlEditorWorkspace
-                  ref="contentAreaRef"
-                  @locate-tab="locateTabInSidebar"
-                  @toggle-zen-mode="toggleZenMode"
-                  @start-resize="startTabBarResize"
-                  @toggle-collapse="toggleTabBarCollapsed"
-                  :active-tab="activeTab!"
-                  :active-connection="activeConnection"
-                  :tab-bar-width="tabBarWidth"
-                  :tab-bar-collapsed="tabBarCollapsed"
-                  :can-detach-tabs="isDesktop"
-                  @detach-tab="detachTab"
-                  :executable-sql="executableSql"
-                  :active-output-view="activeOutputView"
-                  :format-sql-request="formatSqlRequest"
-                  :compress-sql-request="compressSqlRequest"
-                  :selected-sql="selectedSql"
-                  :cursor-pos="cursorPos"
-                  :block-dangerous-redis-commands="blockDangerousRedisCommands"
-                  :zen-mode="isZenMode"
-                  @update:active-output-view="
-                    (tabId: string, view: 'result' | 'summary' | 'explain' | 'chart' | 'messages') => {
-                      if (tabId === queryStore.activeTabId) activeOutputView = view;
-                    }
-                  "
-                  @preview-changes-available="
-                    (tabId: string, value: boolean) => {
-                      if (tabId === queryStore.activeTabId) previewChangesAvailable = value;
-                    }
-                  "
-                  @fix-with-ai="(_tabId: string, message: string) => fixWithAi(message)"
-                  @send-selection-to-ai="
-                    (tabId: string, sql: string) => {
-                      if (tabId === queryStore.activeTabId) sendSelectionToAi(sql);
-                    }
-                  "
-                  @execute="(tabId: string, override?: SqlExecutionOverride) => tryExecute(override, { tabId })"
-                  @execute-in-new-result-tab="(tabId: string, override?: SqlExecutionOverride) => tryExecuteInNewResultTab(override, { tabId })"
-                  @cancel="(tabId: string) => cancelActiveExecution(tabId)"
-                  @explain="(tabId: string) => tryExplain(undefined, { tabId })"
-                  @editor-update="(tabId: string, v: string) => queryStore.updateSql(tabId, v)"
-                  @editor-selection-change="
-                    (tabId: string, v: string) => {
-                      if (tabId === queryStore.activeTabId) selectedSql = v;
-                    }
-                  "
-                  @editor-cursor-change="
-                    (tabId: string, p: number) => {
-                      if (tabId === queryStore.activeTabId) cursorPos = p;
-                    }
-                  "
-                  @editor-viewport-change="(tabId: string, viewport: { scrollTop: number; scrollLeft: number }) => queryStore.updateEditorViewport(tabId, viewport)"
-                  @editor-selection-state-change="(tabId: string, selection: { anchor: number; head: number }) => queryStore.updateEditorSelection(tabId, selection)"
-                  @format-error="toast(t('toolbar.formatSqlFailed'))"
-                  @save-sql="(tabId: string) => void openSaveSqlDialog(tabId)"
-                  @reload="(tabId: string, sql: any, searchText: any, whereInput: any, orderBy: any, limit: any, offset: any, intent: any) => onReloadData(tabId, sql, searchText, whereInput, orderBy, limit, offset, intent)"
-                  @paginate="(tabId: string, offset: number, limit: number, whereInput?: string, orderBy?: string) => onPaginate(tabId, offset, limit, whereInput, orderBy)"
-                  @sort="(tabId: string, column: string, columnIndex: number, direction: 'asc' | 'desc' | null, whereInput?: string, mode?: DataGridSortMode) => onSort(tabId, column, columnIndex, direction, whereInput, mode)"
-                  @execute-sql="(tabId: string, sql: string) => onExecuteSql(tabId, sql)"
-                  @click-table="(_tabId: string, target: SqlObjectNavigationTarget) => onClickTable(target)"
-                  @view-table-data="(_tabId: string, target: SqlObjectNavigationTarget) => onViewTableData(target)"
-                  @edit-table-structure="(_tabId: string, target: SqlObjectNavigationTarget) => onEditTableStructure(target)"
-                  @view-table-ddl="(_tabId: string, target: SqlObjectNavigationTarget) => onViewTableDdl(target)"
-                  @open-object-source="(_tabId: string, target: SqlObjectNavigationTarget, initialEditing: boolean) => onOpenObjectSource(target, initialEditing)"
-                  @open-object-table="
-                    (tabId: string, target: { tableName: string; schema?: string; tableType?: string; catalog?: string }) => {
-                      const tab = queryStore.tabs.find((candidate) => candidate.id === tabId) ?? activeTab;
-                      if (!tab) return;
-                      openObjectBrowserTableTarget({
-                        connectionId: tab.connectionId,
-                        database: tab.database,
-                        schema: target.schema,
-                        catalog: target.catalog,
-                        tableName: target.tableName,
-                        tableType: target.tableType,
-                      });
-                    }
-                  "
-                  @object-schema-change="(tabId: string, schema: string | undefined) => queryStore.updateSchema(tabId, schema)"
-                  @object-browser-viewport-change="(tabId: string, viewport: any) => queryStore.updateObjectBrowserViewport(tabId, viewport)"
-                  @structure-editor-saved="
-                    (tabId: string, commentChanged: boolean) => {
-                      const tab = queryStore.tabs.find((candidate) => candidate.id === tabId);
-                      if (!tab) return;
-                      onStructureEditorSaved(
-                        async () => {
-                          await onReloadData(tabId);
-                        },
-                        toast,
-                        {
+                <div v-if="queryStore.tabs.length > 0" v-show="!driverStoreActive && !settingsStore.settingsPageActive" class="flex flex-col flex-1 min-h-0">
+                  <SqlEditorWorkspace
+                    ref="contentAreaRef"
+                    @locate-tab="locateTabInSidebar"
+                    @toggle-zen-mode="toggleZenMode"
+                    @start-resize="startTabBarResize"
+                    @toggle-collapse="toggleTabBarCollapsed"
+                    :active-tab="activeTab!"
+                    :active-connection="activeConnection"
+                    :tab-bar-width="tabBarWidth"
+                    :tab-bar-collapsed="tabBarCollapsed"
+                    :can-detach-tabs="isDesktop"
+                    @detach-tab="detachTab"
+                    :executable-sql="executableSql"
+                    :active-output-view="activeOutputView"
+                    :format-sql-request="formatSqlRequest"
+                    :compress-sql-request="compressSqlRequest"
+                    :selected-sql="selectedSql"
+                    :cursor-pos="cursorPos"
+                    :block-dangerous-redis-commands="blockDangerousRedisCommands"
+                    :zen-mode="isZenMode"
+                    @update:active-output-view="
+                      (tabId: string, view: 'result' | 'summary' | 'explain' | 'chart' | 'messages') => {
+                        if (tabId === queryStore.activeTabId) activeOutputView = view;
+                      }
+                    "
+                    @preview-changes-available="
+                      (tabId: string, value: boolean) => {
+                        if (tabId === queryStore.activeTabId) previewChangesAvailable = value;
+                      }
+                    "
+                    @fix-with-ai="(_tabId: string, message: string) => fixWithAi(message)"
+                    @send-selection-to-ai="
+                      (tabId: string, sql: string) => {
+                        if (tabId === queryStore.activeTabId) sendSelectionToAi(sql);
+                      }
+                    "
+                    @execute="(tabId: string, override?: SqlExecutionOverride) => tryExecute(override, { tabId })"
+                    @execute-in-new-result-tab="(tabId: string, override?: SqlExecutionOverride) => tryExecuteInNewResultTab(override, { tabId })"
+                    @cancel="(tabId: string) => cancelActiveExecution(tabId)"
+                    @explain="(tabId: string) => tryExplain(undefined, { tabId })"
+                    @editor-update="(tabId: string, v: string) => queryStore.updateSql(tabId, v)"
+                    @editor-selection-change="
+                      (tabId: string, v: string) => {
+                        if (tabId === queryStore.activeTabId) selectedSql = v;
+                      }
+                    "
+                    @editor-cursor-change="
+                      (tabId: string, p: number) => {
+                        if (tabId === queryStore.activeTabId) cursorPos = p;
+                      }
+                    "
+                    @editor-viewport-change="(tabId: string, viewport: { scrollTop: number; scrollLeft: number }) => queryStore.updateEditorViewport(tabId, viewport)"
+                    @editor-selection-state-change="(tabId: string, selection: { anchor: number; head: number }) => queryStore.updateEditorSelection(tabId, selection)"
+                    @format-error="toast(t('toolbar.formatSqlFailed'))"
+                    @save-sql="(tabId: string) => void openSaveSqlDialog(tabId)"
+                    @reload="(tabId: string, sql: any, searchText: any, whereInput: any, orderBy: any, limit: any, offset: any, intent: any) => onReloadData(tabId, sql, searchText, whereInput, orderBy, limit, offset, intent)"
+                    @paginate="(tabId: string, offset: number, limit: number, whereInput?: string, orderBy?: string) => onPaginate(tabId, offset, limit, whereInput, orderBy)"
+                    @sort="(tabId: string, column: string, columnIndex: number, direction: 'asc' | 'desc' | null, whereInput?: string, mode?: DataGridSortMode) => onSort(tabId, column, columnIndex, direction, whereInput, mode)"
+                    @execute-sql="(tabId: string, sql: string) => onExecuteSql(tabId, sql)"
+                    @click-table="(_tabId: string, target: SqlObjectNavigationTarget) => onClickTable(target)"
+                    @view-table-data="(_tabId: string, target: SqlObjectNavigationTarget) => onViewTableData(target)"
+                    @edit-table-structure="(_tabId: string, target: SqlObjectNavigationTarget) => onEditTableStructure(target)"
+                    @view-table-ddl="(_tabId: string, target: SqlObjectNavigationTarget) => onViewTableDdl(target)"
+                    @open-object-source="(_tabId: string, target: SqlObjectNavigationTarget, initialEditing: boolean) => onOpenObjectSource(target, initialEditing)"
+                    @open-object-table="
+                      (tabId: string, target: { tableName: string; schema?: string; tableType?: string; catalog?: string }) => {
+                        const tab = queryStore.tabs.find((candidate) => candidate.id === tabId) ?? activeTab;
+                        if (!tab) return;
+                        openObjectBrowserTableTarget({
                           connectionId: tab.connectionId,
                           database: tab.database,
-                          schema: tab.schema,
-                          catalog: tab.catalog,
-                          tableName: tab.structureTableName || '',
-                        },
-                        commentChanged,
-                      );
-                    }
-                  "
-                  @structure-editor-close="(tabId: string) => queryStore.closeTab(tabId)"
-                  @open-settings="openSettings"
-                  @open-connection-settings="openConnectionSettings"
+                          schema: target.schema,
+                          catalog: target.catalog,
+                          tableName: target.tableName,
+                          tableType: target.tableType,
+                        });
+                      }
+                    "
+                    @object-schema-change="(tabId: string, schema: string | undefined) => queryStore.updateSchema(tabId, schema)"
+                    @object-browser-viewport-change="(tabId: string, viewport: any) => queryStore.updateObjectBrowserViewport(tabId, viewport)"
+                    @structure-editor-saved="
+                      (tabId: string, commentChanged: boolean) => {
+                        const tab = queryStore.tabs.find((candidate) => candidate.id === tabId);
+                        if (!tab) return;
+                        onStructureEditorSaved(
+                          async () => {
+                            await onReloadData(tabId);
+                          },
+                          toast,
+                          {
+                            connectionId: tab.connectionId,
+                            database: tab.database,
+                            schema: tab.schema,
+                            catalog: tab.catalog,
+                            tableName: tab.structureTableName || '',
+                          },
+                          commentChanged,
+                        );
+                      }
+                    "
+                    @structure-editor-close="(tabId: string) => queryStore.closeTab(tabId)"
+                    @open-settings="openSettings"
+                    @open-connection-settings="openConnectionSettings"
+                  />
+                </div>
+                <WelcomeScreen
+                  v-else-if="queryStore.tabs.length === 0 && !driverStoreActive && !settingsStore.settingsPageActive"
+                  :connection-stats="connectionStats"
+                  :recent-connections="recentConnections"
+                  :saved-sql-history-items="savedSqlHistoryItems"
+                  :app-version="appVersion"
+                  :has-connections="connectionStore.connections.length > 0"
+                  @open-connection-query="openConnectionQuery"
+                  @open-saved-sql="openSavedSqlFromWelcome"
+                  @new-connection="showConnectionDialog = true"
+                  @new-query="newQuery"
+                  @show-history="openRightSidebarPanel('history')"
+                  @import-config="dialogs.onImportClick"
+                  @open-github="openGitHub"
+                  @open-mcp-guide="openMcpGuide"
                 />
               </div>
-              <WelcomeScreen
-                v-else-if="queryStore.tabs.length === 0 && !driverStoreActive && !settingsStore.settingsPageActive"
-                :connection-stats="connectionStats"
-                :recent-connections="recentConnections"
-                :saved-sql-history-items="savedSqlHistoryItems"
-                :app-version="appVersion"
-                :has-connections="connectionStore.connections.length > 0"
-                @open-connection-query="openConnectionQuery"
-                @open-saved-sql="openSavedSqlFromWelcome"
-                @new-connection="showConnectionDialog = true"
-                @new-query="newQuery"
-                @show-history="openRightSidebarPanel('history')"
-                @import-config="dialogs.onImportClick"
-                @open-github="openGitHub"
-                @open-mcp-guide="openMcpGuide"
-              />
             </div>
           </div>
 
