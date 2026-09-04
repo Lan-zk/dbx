@@ -3455,37 +3455,6 @@ export const useQueryStore = defineStore("query", () => {
     beginBatchClose(ids, id);
   }
 
-  function closeRightTabsInGroup(groupId: string, id: string) {
-    const group = findGroup(groupId);
-    const target = tabs.value.find((tab) => tab.id === id);
-    if (!group || !target) return;
-    const partition = group.tabIds.filter((tabId) => {
-      const tab = tabs.value.find((item) => item.id === tabId);
-      return tab && Boolean(tab.pinned) === Boolean(target.pinned);
-    });
-    const targetIndex = partition.indexOf(id);
-    if (targetIndex < 0) return;
-    const ids = partition.slice(targetIndex + 1);
-    if (ids.length === 0) return;
-    const finalActiveTabId = group.activeTabId && !ids.includes(group.activeTabId) ? group.activeTabId : id;
-    beginBatchClose(ids, finalActiveTabId);
-  }
-
-  function closeLeftTabsInGroup(groupId: string, id: string) {
-    const group = findGroup(groupId);
-    const target = tabs.value.find((tab) => tab.id === id);
-    if (!group || !target) return;
-    const partition = group.tabIds.filter((tabId) => {
-      const tab = tabs.value.find((item) => item.id === tabId);
-      return tab && Boolean(tab.pinned) === Boolean(target.pinned);
-    });
-    const targetIndex = partition.indexOf(id);
-    if (targetIndex <= 0) return;
-    const ids = partition.slice(0, targetIndex);
-    const finalActiveTabId = group.activeTabId && !ids.includes(group.activeTabId) ? group.activeTabId : id;
-    beginBatchClose(ids, finalActiveTabId);
-  }
-
   function closeAllTabsInGroup(groupId: string, id: string) {
     const group = findGroup(groupId);
     const target = tabs.value.find((tab) => tab.id === id);
@@ -7665,8 +7634,6 @@ export const useQueryStore = defineStore("query", () => {
     requestAppCloseConfirmation,
     closeOtherTabs,
     closeOtherTabsInGroup,
-    closeRightTabsInGroup,
-    closeLeftTabsInGroup,
     closeAllTabsInGroup,
     closeTabsByIds,
     closeRightTabs,

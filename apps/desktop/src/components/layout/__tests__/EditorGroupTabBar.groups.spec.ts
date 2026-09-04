@@ -71,9 +71,10 @@ describe("EditorGroupTabBar semantic tab groups", () => {
 
   it("closes the global semantic group by key, not just this pane's cluster", () => {
     // D1/D3: closing a group must reach every pane, so the lookup queries the
-    // whole store instead of the bar's display list.
+    // whole store instead of the bar's display list — and stays within the
+    // trigger's pinned section (pinned and regular clusters are independent).
     const closeGroup = sourceBetween("function tabsInSemanticGroup", "function getTabPreferenceMenuItems");
-    expect(closeGroup).toContain("queryStore.tabs.filter((item) => tabGroupKey(item) === groupKey)");
+    expect(closeGroup).toContain("queryStore.tabs.filter((item) => item.pinned === tab.pinned && tabGroupKey(item) === groupKey)");
     expect(closeGroup).toContain("queryStore.closeTabsByIds(tabsToClose, finalActiveTabId)");
   });
 
@@ -81,6 +82,23 @@ describe("EditorGroupTabBar semantic tab groups", () => {
     expect(source).toContain("await settingsStore.updateEditorSettingsAndPersist(partial)");
     expect(source).toContain("openTabGroupContextMenu($event, onContextMenu)");
     expect(source).toContain("document.getSelection()?.removeAllRanges()");
+  });
+
+  it("applies the group rail classes to clustered pills", () => {
+    // The horizontal underline and vertical indent rails only render when the
+    // pill carries tab-group-tab with its --first/--last markers.
+    expect(source).toContain("'tab-group-tab': entry.grouping,");
+    expect(source).toContain("'tab-group-tab--first': entry.grouping && entry.groupFirst,");
+    expect(source).toContain("'tab-group-tab--last': entry.grouping && entry.groupLast,");
+    expect(sharedStyles).toContain(".app-tab-bar:not(.vertical-tab-layout) .tab-group-tab::after");
+  });
+
+  it("hides collapsed cluster pills but reveals them while searching", () => {
+    expect(source).toContain("grouping && !tabSearchQuery.value.trim() && isTabGroupCollapsed(tab)");
+  });
+
+  it("keeps wrap layout out of the vertical placement", () => {
+    expect(source).toContain('const isWrapLayout = computed(() => !isVerticalLayout.value && settingsStore.editorSettings.tabLayout === "wrap");');
   });
 
   it("uses compact group pills and places the accent next to content for horizontal bars", () => {
@@ -315,6 +333,34 @@ describe("EditorGroupTabBar group behavior", () => {
     // second-group lost its only tab and was pruned; pgB is gone from main too.
     expect(store.groups.map((group) => group.id)).toEqual([mainGroup.id]);
     expect(store.groups[0]?.tabIds).toEqual([my]);
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("closing a group spares the pinned cluster that shares its key", async () => {
+    const store = useQueryStore();
+    const settings = useSettingsStore();
+    settings.editorSettings.tabGroupMode = "connection";
+    const pgA = store.createTab("pg-1", "app", "PG 1", "query");
+    const pgB = store.createTab("pg-1", "app", "PG 2", "query");
+    store.togglePinnedTab(pgB);
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, store.tabs.slice(), pgA, pinia);
+    await settle();
+
+    const pgPill = host.querySelector<HTMLElement>(`[data-tab-id="${pgA}"]`)!;
+    pgPill.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    await settle();
+    const menu = document.body.querySelector<HTMLElement>("[data-dbx-context-menu]")!;
+    const closeGroupItem = Array.from(menu.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Close group"));
+    expect(closeGroupItem).toBeDefined();
+    closeGroupItem!.click();
+    await settle();
+
+    // The regular cluster is gone; the pinned tab with the same key survives.
+    const remainingIds = store.tabs.map((tab) => tab.id);
+    expect(remainingIds).toEqual([pgB]);
 
     app.unmount();
     host.remove();

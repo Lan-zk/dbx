@@ -131,54 +131,6 @@ describe("queryStore editor groups", () => {
     expect(store.tabs.some((tab) => tab.id === secondId)).toBe(false);
   });
 
-  it("close left in group closes the tabs before the trigger within its pinned partition and activates the trigger", async () => {
-    const { useQueryStore } = await import("@/stores/queryStore");
-    const store = useQueryStore();
-    const firstId = store.createTab("pg-1", "app", "Query 1", "query");
-    const secondId = store.createTab("pg-1", "app", "Query 2", "query");
-    const thirdId = store.createTab("pg-1", "app", "Query 3", "query");
-    const mainId = store.groups[0].id;
-
-    store.activateTab(firstId);
-    store.closeLeftTabsInGroup(mainId, thirdId);
-
-    expect(store.tabs.some((tab) => tab.id === firstId)).toBe(false);
-    expect(store.tabs.some((tab) => tab.id === secondId)).toBe(false);
-    expect(store.tabs.some((tab) => tab.id === thirdId)).toBe(true);
-    // The group's active tab was among the closed ones; the trigger takes over.
-    expect(store.groups[0].activeTabId).toBe(thirdId);
-    expect(store.activeTabId).toBe(thirdId);
-
-    // Closing left of the first tab is a no-op.
-    store.closeLeftTabsInGroup(mainId, thirdId);
-    expect(store.tabs).toHaveLength(1);
-  });
-
-  it("close left in group only closes the trigger's pinned partition, sparing pinned tabs", async () => {
-    const { useQueryStore } = await import("@/stores/queryStore");
-    const store = useQueryStore();
-    const firstId = store.createTab("pg-1", "app", "Query 1", "query");
-    const secondId = store.createTab("pg-1", "app", "Query 2", "query");
-    const thirdId = store.createTab("pg-1", "app", "Query 3", "query");
-    const mainId = store.groups[0].id;
-
-    // Pinning reorders the group to [pinned-first, regular...]: [1, 2, 3].
-    store.togglePinnedTab(firstId);
-
-    // The unpinned trigger's partition is [2, 3]: the pinned tab to its left
-    // is outside the partition and survives, the unpinned one does not.
-    store.closeLeftTabsInGroup(mainId, thirdId);
-    expect(store.tabs.some((tab) => tab.id === firstId)).toBe(true);
-    expect(store.tabs.some((tab) => tab.id === secondId)).toBe(false);
-    expect(store.tabs.some((tab) => tab.id === thirdId)).toBe(true);
-
-    // Closing left of the pinned tab only sees other pinned tabs (none
-    // here): the unpinned trigger survives untouched.
-    store.closeLeftTabsInGroup(mainId, firstId);
-    expect(store.tabs.some((tab) => tab.id === firstId)).toBe(true);
-    expect(store.tabs.some((tab) => tab.id === thirdId)).toBe(true);
-  });
-
   it("normalizes more than four groups at the restore boundary without orphaning tabs", async () => {
     const { useSettingsStore } = await import("@/stores/settingsStore");
     const { useQueryStore } = await import("@/stores/queryStore");

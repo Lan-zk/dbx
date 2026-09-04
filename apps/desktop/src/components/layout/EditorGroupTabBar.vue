@@ -121,7 +121,7 @@ const editingTitle = ref("");
 const suppressNextTabClick = ref(false);
 const isClassicLayout = computed(() => settingsStore.editorSettings.appLayout === "classic");
 const isVerticalLayout = computed(() => settingsStore.editorSettings.tabPlacement === "left" || settingsStore.editorSettings.tabPlacement === "right");
-const isWrapLayout = computed(() => settingsStore.editorSettings.tabLayout === "wrap");
+const isWrapLayout = computed(() => !isVerticalLayout.value && settingsStore.editorSettings.tabLayout === "wrap");
 // The icon-only collapse only exists in the vertical toolbar; horizontal
 // placements must ignore the persisted collapse state entirely.
 const isTabBarCollapsed = computed(() => isVerticalLayout.value && !!props.tabBarCollapsed);
@@ -423,7 +423,7 @@ async function resetTabGroupCustomization(tab?: QueryTab) {
 function tabsInSemanticGroup(tab: QueryTab) {
   if (settingsStore.editorSettings.tabGroupMode === "none") return [];
   const groupKey = tabGroupKey(tab);
-  return queryStore.tabs.filter((item) => tabGroupKey(item) === groupKey);
+  return queryStore.tabs.filter((item) => item.pinned === tab.pinned && tabGroupKey(item) === groupKey);
 }
 
 /**
@@ -509,12 +509,30 @@ type StripEntry = { kind: "header"; key: string; tab: QueryTab; pinned: boolean;
  * entries: a group header before each semantic cluster, then that cluster's
  * pills. Collapsed clusters contribute no tab entries, only their header.
  */
+function tabMatchesSearch(tab: QueryTab, query: string) {
+  const title = tabDisplayTitle(tab, t).toLocaleLowerCase();
+  return title.includes(query) || tab.title.toLocaleLowerCase().includes(query);
+}
+
+/**
+ * The strips apply the search box (overflow popover and vertical toolbar
+ * share it): sections filter by title before clustering.
+ */
+const filteredPinnedTabs = computed(() => {
+  const query = tabSearchQuery.value.trim().toLocaleLowerCase();
+  return query ? sortedPinnedTabs.value.filter((tab) => tabMatchesSearch(tab, query)) : sortedPinnedTabs.value;
+});
+const filteredRegularTabs = computed(() => {
+  const query = tabSearchQuery.value.trim().toLocaleLowerCase();
+  return query ? sortedRegularTabs.value.filter((tab) => tabMatchesSearch(tab, query)) : sortedRegularTabs.value;
+});
+
 const stripEntries = computed<StripEntry[]>(() => {
   const entries: StripEntry[] = [];
   const grouping = settingsStore.editorSettings.tabGroupMode !== "none";
   for (const [section, pinned] of [
-    [sortedPinnedTabs.value, true],
-    [sortedRegularTabs.value, false],
+    [filteredPinnedTabs.value, true],
+    [filteredRegularTabs.value, false],
   ] as const) {
     section.forEach((tab, index) => {
       const first = grouping && (index === 0 || tabGroupKey(section[index - 1]!) !== tabGroupKey(tab));
@@ -523,7 +541,8 @@ const stripEntries = computed<StripEntry[]>(() => {
         const groupKey = tabGroupKey(tab);
         entries.push({ kind: "header", key: `header:${tab.id}`, tab, pinned, count: section.filter((item) => tabGroupKey(item) === groupKey).length });
       }
-      if (grouping && isTabGroupCollapsed(tab)) {
+      // Searching must reveal collapsed clusters, matching the upstream bar.
+      if (grouping && !tabSearchQuery.value.trim() && isTabGroupCollapsed(tab)) {
         return;
       }
       entries.push({ kind: "tab", key: tab.id, tab, groupFirst: first, groupLast: last, grouping });
@@ -1087,11 +1106,16 @@ watch(
                   <TooltipTrigger as-child>
                     <div
                       class="app-tab-pill group flex cursor-default items-center gap-1 px-2 text-xs transition-colors whitespace-nowrap select-none"
-                      :class="
+                      :class="[
                         isClassicLayout
                           ? ['h-full border-r border-border/80 font-medium dark:border-border/45', entry.tab.id === activeTabId ? 'bg-background text-foreground' : 'text-foreground/70 hover:text-foreground/90']
-                          : ['h-7 rounded-md border', entry.tab.id === activeTabId ? 'text-foreground font-medium' : 'border-border/60 text-foreground/70 hover:border-border hover:text-foreground/90']
-                      "
+                          : ['h-7 rounded-md border', entry.tab.id === activeTabId ? 'text-foreground font-medium' : 'border-border/60 text-foreground/70 hover:border-border hover:text-foreground/90'],
+                        {
+                          'tab-group-tab': entry.grouping,
+                          'tab-group-tab--first': entry.grouping && entry.groupFirst,
+                          'tab-group-tab--last': entry.grouping && entry.groupLast,
+                        },
+                      ]"
                       :style="[tabColorStyle(entry.tab), entry.grouping ? tabGroupStyle(entry.tab) : undefined, tabDropStyle(entry.tab)]"
                       :data-active-tab="entry.tab.id === activeTabId"
                       :data-tab-id="entry.tab.id"
@@ -1121,7 +1145,7 @@ watch(
                       </TabExecutionStatus>
                       <span v-if="isTabBarCollapsed && isDirtyTab(entry.tab)" class="compact-dirty-tab-marker" aria-hidden="true" />
                       <input
-                        v-if="editingTabId === entry.tab.id"
+                        v-if="editingTabId === entry.tab.id && !isTabBarCollapsed"
                         v-model="editingTitle"
                         :data-tab-title-input="entry.tab.id"
                         :aria-label="t('contextMenu.renameTab')"
@@ -1132,15 +1156,15 @@ watch(
                         @keydown.escape.prevent="cancelRenameTab"
                         @blur="commitRenameTab(entry.tab)"
                       />
-                      <span v-else class="inline-flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-foreground">
+                      <span v-else-if="!isTabBarCollapsed" class="inline-flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-foreground">
                         <span v-if="isDirtyTab(entry.tab)" aria-hidden="true" class="dirty-tab-marker">*</span>
                         <span class="min-w-0 flex-1 truncate" :style="tabTitleStyle(entry.tab)">{{ tabDisplayTitle(entry.tab, t) }}</span>
                       </span>
-                      <ReadOnlySessionControl :connection-id="entry.tab.connectionId" compact />
-                      <button v-if="entry.tab.pinned" class="rounded p-0.5 text-primary hover:bg-muted-foreground/20 shrink-0" :aria-label="t('contextMenu.unpinTab')" :title="t('contextMenu.unpinTab')" @pointerdown.stop @click.stop="queryStore.togglePinnedTab(entry.tab.id)">
+                      <ReadOnlySessionControl v-if="!isTabBarCollapsed" :connection-id="entry.tab.connectionId" compact />
+                      <button v-if="entry.tab.pinned && !isTabBarCollapsed" class="rounded p-0.5 text-primary hover:bg-muted-foreground/20 shrink-0" :aria-label="t('contextMenu.unpinTab')" :title="t('contextMenu.unpinTab')" @pointerdown.stop @click.stop="queryStore.togglePinnedTab(entry.tab.id)">
                         <Pin class="h-3 w-3 fill-current" aria-hidden="true" />
                       </button>
-                      <button class="rounded hover:bg-muted-foreground/20 p-0.5 shrink-0" :aria-label="t('contextMenu.closeTab')" :title="t('contextMenu.closeTab')" @pointerdown.stop @click.stop="closeTab(entry.tab)">
+                      <button v-if="!isTabBarCollapsed" class="rounded hover:bg-muted-foreground/20 p-0.5 shrink-0" :aria-label="t('contextMenu.closeTab')" :title="t('contextMenu.closeTab')" @pointerdown.stop @click.stop="closeTab(entry.tab)">
                         <X class="h-3 w-3" />
                       </button>
                     </div>
