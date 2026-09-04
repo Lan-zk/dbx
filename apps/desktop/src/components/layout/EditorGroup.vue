@@ -23,6 +23,8 @@ const props = defineProps<
     groupId: string;
     tabIds: string[];
     activeTabId: string | null;
+    tabBarWidth?: number;
+    tabBarCollapsed?: boolean;
   }
 >();
 
@@ -32,6 +34,8 @@ const emit = defineEmits<
     "activate-tab": [tabId: string];
     "locate-tab": [tab: QueryTab];
     "toggle-zen-mode": [];
+    "start-resize": [event: MouseEvent];
+    "toggle-collapse": [];
   }
 >();
 
@@ -91,6 +95,21 @@ const showGroupToolbar = computed(() => activeTab.value?.mode === "query" && !is
 const isGroupOracleManualTransaction = computed(() => effectiveDatabaseTypeForConnection(activeConnection.value) === "oracle" && (activeTab.value?.autoCommit ?? true) === false);
 // Each group previews the executable SQL of its own active tab (selection
 // stored on the tab), not the focused tab's global selection.
+// tabPlacement drives each pane's own bar position: the strip sits above,
+// below, left, or right of the pane's content, uniformly across panes.
+const groupLayoutClass = computed(() => {
+  switch (settingsStore.editorSettings.tabPlacement) {
+    case "bottom":
+      return "flex-col-reverse";
+    case "left":
+      return "flex-row";
+    case "right":
+      return "flex-row-reverse";
+    default:
+      return "flex-col";
+  }
+});
+
 const groupExecutableSql = computed(() => {
   const tab = activeTab.value;
   if (!tab || tab.mode !== "query") {
@@ -106,59 +125,74 @@ const groupExecutableSql = computed(() => {
 </script>
 
 <template>
-  <div class="editor-group flex h-full min-h-0 min-w-0 flex-col overflow-hidden" :class="groupClass" :data-group-id="groupId" @pointerdown.capture="$emit('focus-group', groupId)" @focusin="$emit('focus-group', groupId)">
-    <EditorGroupTabBar :group-id="groupId" :tabs="groupTabs" :active-tab-id="activeTabId" @activate-tab="$emit('activate-tab', $event)" @locate-tab="$emit('locate-tab', $event)" @toggle-zen-mode="$emit('toggle-zen-mode')" />
-    <EditorToolbar
-      v-if="activeTab && showGroupToolbar"
-      :active-tab="activeTab"
-      :active-connection="activeConnection"
-      :executable-sql="groupExecutableSql"
-      :explain-mode="toolbar.explainMode.value"
-      :block-dangerous-redis-commands="toolbar.blockDangerousRedisCommands.value"
-      :sql-keyword-case="settingsStore.editorSettings.sqlFormatter.keywordCase"
-      :database-required-signal="toolbar.databaseRequiredSignalFor(activeTab.id)"
-      :auto-commit="activeTab.autoCommit ?? true"
-      :txn-session-id="activeTab.txnSessionId"
-      :txn-auto-rolled-back="activeTab.txnAutoRolledBack"
-      :oracle-txn-possibly-dirty="activeTab.oracleTxnPossiblyDirty"
-      :is-oracle-manual-transaction="isGroupOracleManualTransaction"
-      @update:explain-mode="(m: 'explain' | 'autotrace') => (toolbar.explainMode.value = m)"
-      @update:block-dangerous-redis-commands="(v: boolean) => (toolbar.blockDangerousRedisCommands.value = v)"
-      @update:auto-commit="
-        (v: boolean) => {
-          if (activeTab) {
-            queryStore.setAutoCommit(activeTab.id, v);
-          }
-        }
-      "
-      @commit="activeTab && queryStore.commitTransaction(activeTab.id)"
-      @rollback="activeTab && queryStore.rollbackTransaction(activeTab.id)"
-      @dismiss-txn-rolled-back="activeTab && (activeTab.txnAutoRolledBack = false)"
-      @execute-pointer-down="toolbar.captureExecutionSnapshot()"
-      @toolbar-execute="toolbar.toolbarExecute($event)"
-      @multi-execute="toolbar.multiExecute()"
-      @preview-changes="activeTab && toolbar.previewChanges(activeTab.id)"
-      @cancel="activeTab && toolbar.cancelExecution(activeTab.id)"
-      @explain="activeTab && toolbar.explain(activeTab.id)"
-      @format-sql="activeTab && toolbar.formatSql(activeTab.id)"
-      @compress-sql="activeTab && toolbar.compressSql(activeTab.id)"
-      @toggle-sql-keyword-case="toolbar.toggleSqlKeywordCase()"
-      @save-sql="(tabId: string) => toolbar.saveSql(tabId)"
-      @open-sql="toolbar.openSqlFile()"
-      @import-result-archive="toolbar.importResultArchive()"
-      @paste-sql-in-condition="toolbar.pasteSqlInCondition()"
-      @change-connection="(connectionId: string) => activeTab && toolbar.changeConnection(activeTab.id, connectionId)"
-      @change-database="(database: string) => activeTab && toolbar.changeDatabase(activeTab.id, database)"
-      @change-catalog="(catalog: string | undefined, database: string) => activeTab && toolbar.changeCatalog(activeTab.id, catalog, database)"
-      @change-schema="(schema: string | undefined) => activeTab && toolbar.changeSchema(activeTab.id, schema)"
-      @set-default-database="activeTab && toolbar.setDefaultDatabase(activeTab.id)"
-      @clear-default-database="activeTab && toolbar.clearDefaultDatabase(activeTab.id)"
+  <div class="editor-group flex h-full min-h-0 min-w-0 overflow-hidden" :class="[groupClass, groupLayoutClass]" :data-group-id="groupId" @pointerdown.capture="$emit('focus-group', groupId)" @focusin="$emit('focus-group', groupId)">
+    <EditorGroupTabBar
+      :group-id="groupId"
+      :tabs="groupTabs"
+      :active-tab-id="activeTabId"
+      :tab-bar-width="tabBarWidth"
+      :tab-bar-collapsed="tabBarCollapsed"
+      @activate-tab="$emit('activate-tab', $event)"
+      @locate-tab="$emit('locate-tab', $event)"
+      @toggle-zen-mode="$emit('toggle-zen-mode')"
+      @start-resize="$emit('start-resize', $event)"
+      @toggle-collapse="$emit('toggle-collapse')"
     />
-    <div class="relative flex-1 min-h-0">
-      <QueryEditorSurface v-if="activeTab?.mode === 'query'" ref="activeSurfaceRef" v-bind="surfaceBindings" :auto-focus="groupId === queryStore.focusedGroupId" class="h-full" />
-      <ContentArea v-else-if="activeTab" ref="activeSurfaceRef" v-bind="surfaceBindings" class="h-full" />
-      <div v-else class="flex h-full items-center justify-center text-sm text-muted-foreground">
-        {{ t("tabs.emptyGroup") }}
+    <!-- The toolbar stays at the top of the pane's content column in every
+         placement; only the tab bar moves around it. -->
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <EditorToolbar
+        v-if="activeTab && showGroupToolbar"
+        :active-tab="activeTab"
+        :active-connection="activeConnection"
+        :executable-sql="groupExecutableSql"
+        :explain-mode="toolbar.explainMode.value"
+        :block-dangerous-redis-commands="toolbar.blockDangerousRedisCommands.value"
+        :sql-keyword-case="settingsStore.editorSettings.sqlFormatter.keywordCase"
+        :database-required-signal="toolbar.databaseRequiredSignalFor(activeTab.id)"
+        :auto-commit="activeTab.autoCommit ?? true"
+        :txn-session-id="activeTab.txnSessionId"
+        :txn-auto-rolled-back="activeTab.txnAutoRolledBack"
+        :oracle-txn-possibly-dirty="activeTab.oracleTxnPossiblyDirty"
+        :is-oracle-manual-transaction="isGroupOracleManualTransaction"
+        @update:explain-mode="(m: 'explain' | 'autotrace') => (toolbar.explainMode.value = m)"
+        @update:block-dangerous-redis-commands="(v: boolean) => (toolbar.blockDangerousRedisCommands.value = v)"
+        @update:auto-commit="
+          (v: boolean) => {
+            if (activeTab) {
+              queryStore.setAutoCommit(activeTab.id, v);
+            }
+          }
+        "
+        @commit="activeTab && queryStore.commitTransaction(activeTab.id)"
+        @rollback="activeTab && queryStore.rollbackTransaction(activeTab.id)"
+        @dismiss-txn-rolled-back="activeTab && (activeTab.txnAutoRolledBack = false)"
+        @execute-pointer-down="toolbar.captureExecutionSnapshot()"
+        @toolbar-execute="toolbar.toolbarExecute($event)"
+        @multi-execute="toolbar.multiExecute()"
+        @preview-changes="activeTab && toolbar.previewChanges(activeTab.id)"
+        @cancel="activeTab && toolbar.cancelExecution(activeTab.id)"
+        @explain="activeTab && toolbar.explain(activeTab.id)"
+        @format-sql="activeTab && toolbar.formatSql(activeTab.id)"
+        @compress-sql="activeTab && toolbar.compressSql(activeTab.id)"
+        @toggle-sql-keyword-case="toolbar.toggleSqlKeywordCase()"
+        @save-sql="(tabId: string) => toolbar.saveSql(tabId)"
+        @open-sql="toolbar.openSqlFile()"
+        @import-result-archive="toolbar.importResultArchive()"
+        @paste-sql-in-condition="toolbar.pasteSqlInCondition()"
+        @change-connection="(connectionId: string) => activeTab && toolbar.changeConnection(activeTab.id, connectionId)"
+        @change-database="(database: string) => activeTab && toolbar.changeDatabase(activeTab.id, database)"
+        @change-catalog="(catalog: string | undefined, database: string) => activeTab && toolbar.changeCatalog(activeTab.id, catalog, database)"
+        @change-schema="(schema: string | undefined) => activeTab && toolbar.changeSchema(activeTab.id, schema)"
+        @set-default-database="activeTab && toolbar.setDefaultDatabase(activeTab.id)"
+        @clear-default-database="activeTab && toolbar.clearDefaultDatabase(activeTab.id)"
+      />
+      <div class="relative flex-1 min-h-0">
+        <QueryEditorSurface v-if="activeTab?.mode === 'query'" ref="activeSurfaceRef" v-bind="surfaceBindings" :auto-focus="groupId === queryStore.focusedGroupId" class="h-full" />
+        <ContentArea v-else-if="activeTab" ref="activeSurfaceRef" v-bind="surfaceBindings" class="h-full" />
+        <div v-else class="flex h-full items-center justify-center text-sm text-muted-foreground">
+          {{ t("tabs.emptyGroup") }}
+        </div>
       </div>
     </div>
   </div>

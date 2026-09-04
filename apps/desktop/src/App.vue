@@ -281,7 +281,8 @@ const rightSidebarPanelStorageKeys: Partial<Record<RightSidebarPanelId, string>>
 let lastOpenedRightSidebarPanel = RIGHT_SIDEBAR_PANEL_IDS.find((panelId) => rightSidebarPanelRefs[panelId].value);
 const sidebarOpen = ref(safeLocalStorageGet("dbx-sidebar-open") !== "false");
 const aiPanelReady = ref(false);
-const { sidebarWidth, aiPanelWidth, historyWidth, sqlLibraryWidth, sqlFilePanelWidth, startSidebarResize, startAiPanelResize, startHistoryResize, startSqlLibraryResize, startSqlFilePanelResize } = usePanelResize();
+const { sidebarWidth, aiPanelWidth, historyWidth, sqlLibraryWidth, sqlFilePanelWidth, tabBarWidth, tabBarCollapsed, startSidebarResize, startAiPanelResize, startHistoryResize, startSqlLibraryResize, startSqlFilePanelResize, startLeftTabBarResize, startRightTabBarResize, setTabBarCollapsed } =
+  usePanelResize();
 const aiAssistantRef = ref<AiAssistantHandle | null>(null);
 const appSidebarRef = ref<InstanceType<typeof AppSidebar> | null>(null);
 const appTabBarRef = ref<InstanceType<typeof AppTabBar> | null>(null);
@@ -895,6 +896,19 @@ const tabWorkspaceLayoutClass = computed(() => {
   if (settingsStore.editorSettings.tabPlacement === "right") return "flex-row-reverse";
   return isVerticalTabPlacement.value ? "flex-row" : "flex-col";
 });
+
+// Every pane's vertical strip writes back to this shared width/collapse state.
+function startTabBarResize(event: MouseEvent) {
+  if (settingsStore.editorSettings.tabPlacement === "right") {
+    startRightTabBarResize(event);
+    return;
+  }
+  startLeftTabBarResize(event);
+}
+
+function toggleTabBarCollapsed() {
+  setTabBarCollapsed(!tabBarCollapsed.value);
+}
 
 const updateNotificationsEnabled = computed(() => settingsStore.editorSettings.updateNotificationsEnabled);
 
@@ -3475,8 +3489,12 @@ onUnmounted(() => {
                   ref="contentAreaRef"
                   @locate-tab="locateTabInSidebar"
                   @toggle-zen-mode="toggleZenMode"
+                  @start-resize="startTabBarResize"
+                  @toggle-collapse="toggleTabBarCollapsed"
                   :active-tab="activeTab!"
                   :active-connection="activeConnection"
+                  :tab-bar-width="tabBarWidth"
+                  :tab-bar-collapsed="tabBarCollapsed"
                   :executable-sql="executableSql"
                   :active-output-view="activeOutputView"
                   :format-sql-request="formatSqlRequest"

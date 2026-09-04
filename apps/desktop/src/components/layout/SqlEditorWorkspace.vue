@@ -13,11 +13,18 @@ import type { QueryTab } from "@/types/database";
 
 defineOptions({ inheritAttrs: false });
 
-const props = defineProps<ContentAreaSurfaceProps>();
+const props = defineProps<
+  ContentAreaSurfaceProps & {
+    tabBarWidth?: number;
+    tabBarCollapsed?: boolean;
+  }
+>();
 const emit = defineEmits<
   ContentAreaSurfaceEmits & {
     "locate-tab": [tab: QueryTab];
     "toggle-zen-mode": [];
+    "start-resize": [event: MouseEvent];
+    "toggle-collapse": [];
   }
 >();
 
@@ -203,12 +210,16 @@ function handleFocusStatement(tabId: string, range: StatementRange | null): bool
               :group-id="group.id"
               :tab-ids="group.tabIds"
               :active-tab-id="group.activeTabId"
+              :tab-bar-width="tabBarWidth"
+              :tab-bar-collapsed="tabBarCollapsed"
               class="h-full"
               v-bind="editorGroupBindings"
               @focus-group="queryStore.focusGroup($event)"
               @activate-tab="queryStore.activateTabInGroup(group.id, $event)"
               @locate-tab="emit('locate-tab', $event)"
               @toggle-zen-mode="emit('toggle-zen-mode')"
+              @start-resize="emit('start-resize', $event)"
+              @toggle-collapse="emit('toggle-collapse')"
             />
           </Pane>
         </Splitpanes>

@@ -37,6 +37,8 @@ import {
   ArrowRight,
   CalendarClock,
   ChevronDown,
+  ChevronsLeft,
+  ChevronsRight,
   Code2,
   Copy,
   Database,
@@ -60,6 +62,7 @@ import {
   Activity,
 } from "@lucide/vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
+import LightDropdown from "@/components/ui/LightDropdown.vue";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
@@ -87,12 +90,17 @@ const props = defineProps<{
   groupId: string;
   tabs: QueryTab[];
   activeTabId: string | null;
+  /** Shared vertical-strip width/collapse state owned by App (usePanelResize). */
+  tabBarWidth?: number;
+  tabBarCollapsed?: boolean;
 }>();
 
 const emit = defineEmits<{
   "activate-tab": [tabId: string];
   "locate-tab": [tab: QueryTab];
   "toggle-zen-mode": [];
+  "start-resize": [event: MouseEvent];
+  "toggle-collapse": [];
 }>();
 
 const { t } = useI18n();
@@ -109,7 +117,24 @@ const editingTitle = ref("");
 // with the drag state. A fresh pointerdown always resets it.
 const suppressNextTabClick = ref(false);
 const isClassicLayout = computed(() => settingsStore.editorSettings.appLayout === "classic");
+const isVerticalLayout = computed(() => settingsStore.editorSettings.tabPlacement === "left" || settingsStore.editorSettings.tabPlacement === "right");
 const isWrapLayout = computed(() => settingsStore.editorSettings.tabLayout === "wrap");
+// The icon-only collapse only exists in the vertical toolbar; horizontal
+// placements must ignore the persisted collapse state entirely.
+const isTabBarCollapsed = computed(() => isVerticalLayout.value && !!props.tabBarCollapsed);
+const tabBarStyle = computed<CSSProperties | undefined>(() => {
+  if (!isVerticalLayout.value) return undefined;
+  if (props.tabBarCollapsed) return { width: "3.5rem", flex: "0 0 3.5rem" };
+  const width = props.tabBarWidth ?? 240;
+  return { width: `${width}px`, flex: `0 0 ${width}px` };
+});
+const tabBarCollapseIcon = computed(() => {
+  const isLeft = settingsStore.editorSettings.tabPlacement === "left";
+  if (props.tabBarCollapsed) return isLeft ? ChevronsRight : ChevronsLeft;
+  return isLeft ? ChevronsLeft : ChevronsRight;
+});
+const tabBarCollapseLabel = computed(() => t(props.tabBarCollapsed ? "tabs.expandTabBar" : "tabs.collapseTabBar"));
+const verticalTabToolbarButtonClass = "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-border hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 const groupCapacityReached = computed(() => queryStore.groups.length >= 4);
 const splitUnavailable = computed(() => groupCapacityReached.value || queryStore.tabs.length <= 1);
 const canChangeOrientation = computed(() => queryStore.groups.length >= 2);
@@ -125,7 +150,14 @@ function toggleCompactTabTitle() {
   compactTabTitle.value = !compactTabTitle.value;
 }
 
-const tabBarClass = computed(() => [isClassicLayout.value ? "bg-muted" : "border-b bg-background"]);
+const tabBarClass = computed(() => [
+  isVerticalLayout.value
+    ? `vertical-tab-layout h-full w-60 flex-col bg-background ${settingsStore.editorSettings.tabPlacement === "right" ? "border-l" : "border-r"}`
+    : isClassicLayout.value
+      ? "bg-muted"
+      : `bg-background ${settingsStore.editorSettings.tabPlacement === "bottom" ? "border-t" : "border-b"}`,
+  isVerticalLayout.value && props.tabBarCollapsed ? "vertical-tab-layout--collapsed" : "",
+]);
 const tabsContainerStyle = computed<CSSProperties>(() => ({
   msOverflowStyle: "none",
   scrollbarWidth: "none",
@@ -155,8 +187,15 @@ watch(tabOverflowOpen, (open) => {
   }
 });
 
-const showOverflowControl = computed(() => props.tabs.length > 0 && hasTabOverflow.value && !isWrapLayout.value);
-const tabTailDragRegionClass = computed(() => (showOverflowControl.value || isWrapLayout.value ? "w-0 flex-none self-stretch" : "min-w-8 flex-1 self-stretch"));
+const showOverflowControl = computed(() => props.tabs.length > 0 && hasTabOverflow.value && !isWrapLayout.value && !isVerticalLayout.value);
+const tabTailDragRegionClass = computed(() => (showOverflowControl.value || isWrapLayout.value || isVerticalLayout.value ? "w-0 flex-none self-stretch" : "min-w-8 flex-1 self-stretch"));
+
+watch(
+  () => props.tabBarCollapsed,
+  (collapsed) => {
+    if (collapsed) tabSearchQuery.value = "";
+  },
+);
 
 /**
  * Semantic tab groups (pills) are a render-time clustering of the tabs this
@@ -491,8 +530,22 @@ const stripEntries = computed<StripEntry[]>(() => {
 });
 
 function tabColorStyle(tab: QueryTab): CSSProperties | undefined {
+  // Sidebar tabs carry their group/connection color as a soft active wash;
+  // the active indicator itself comes from the vertical CSS rules.
+  if (isVerticalLayout.value) {
+    if (tab.id !== props.activeTabId) {
+      return undefined;
+    }
+    const color = connectionColor(tab.connectionId);
+    return { "--app-tab-background": color ? hexToRgba(color, 0.12) : "var(--accent)" } as CSSProperties;
+  }
   return sharedTabColorStyle(tab, tab.id === props.activeTabId, isClassicLayout.value);
 }
+
+const tabTooltipSide = computed(() => {
+  if (!isVerticalLayout.value) return "bottom" as const;
+  return settingsStore.editorSettings.tabPlacement === "left" ? ("right" as const) : ("left" as const);
+});
 
 /**
  * Drag visuals for a pill, ported from the legacy tab bar's tabDropStyle: the
@@ -950,19 +1003,49 @@ watch(
 </script>
 
 <template>
-  <div class="app-tab-bar group-tabbar relative flex w-full min-w-0 shrink-0 overflow-hidden" :class="tabBarClass" :data-group-id="groupId" :data-placement="settingsStore.editorSettings.tabPlacement">
-    <div class="flex w-full min-w-0 shrink-0 overflow-hidden" :class="isClassicLayout ? 'h-9 items-stretch' : 'h-10 items-center px-2'">
+  <div class="app-tab-bar group-tabbar relative flex w-full min-w-0 shrink-0 overflow-hidden" :class="tabBarClass" :style="tabBarStyle" :data-group-id="groupId" :data-placement="settingsStore.editorSettings.tabPlacement">
+    <!-- Compact vertical toolbar: search, grouping preference, collapse. -->
+    <div v-if="isVerticalLayout" class="flex shrink-0 items-center gap-0.5 border-b p-1.5" :class="isTabBarCollapsed ? 'justify-center' : ''">
+      <div v-if="!isTabBarCollapsed" class="relative min-w-0 flex-1">
+        <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input v-model="tabSearchQuery" type="search" :placeholder="t('tabs.searchOpenTabs')" class="h-8 w-full pl-7 text-sm" />
+      </div>
+      <div v-if="!isTabBarCollapsed" class="flex shrink-0 items-center gap-0">
+        <LightDropdown
+          :model-value="settingsStore.editorSettings.tabGroupMode"
+          :items="tabGroupItems"
+          :aria-label="t('settings.tabGroup')"
+          :trigger-title="t('settings.tabGroup')"
+          :trigger-icon="ListFilter"
+          :trigger-class="verticalTabToolbarButtonClass"
+          :show-trigger-label="false"
+          :show-chevron="false"
+          check-position="right"
+          :match-trigger-width="false"
+          align="end"
+          @update:model-value="updateTabGroupMode"
+        />
+      </div>
+      <button type="button" :class="verticalTabToolbarButtonClass" :title="tabBarCollapseLabel" :aria-label="tabBarCollapseLabel" :aria-expanded="!isTabBarCollapsed" @click="emit('toggle-collapse')">
+        <component :is="tabBarCollapseIcon" class="h-4 w-4" />
+      </button>
+    </div>
+    <div class="flex w-full min-w-0 shrink-0 overflow-hidden" :class="isVerticalLayout ? ['min-h-0 flex-1 flex-col items-stretch'] : isClassicLayout ? 'h-9 items-stretch' : 'h-10 items-center px-2'">
       <div class="app-tab-strip relative h-full min-w-0 flex-1 overflow-hidden">
         <div v-if="showOverflowControl" class="app-tab-scrollbar" :class="{ 'app-tab-scrollbar--dragging': isScrollbarDragging }" @pointerdown="startScrollbarDrag">
           <div class="app-tab-scrollbar__thumb" :style="tabScrollbarThumbStyle" />
         </div>
         <div
           ref="tabsContainerRef"
-          class="app-tab-scroll flex w-full min-w-0 flex-1 items-center overflow-x-auto"
-          :class="[isClassicLayout ? 'h-full' : 'h-full gap-1.5 py-1.5', isWrapLayout ? 'wrap-mode' : '', isWrapLayout && isClassicLayout ? 'classic-wrap' : '']"
+          class="app-tab-scroll flex w-full min-w-0 flex-1"
+          :class="[
+            isVerticalLayout ? 'flex-col items-stretch overflow-y-auto overflow-x-hidden py-1' : isClassicLayout ? 'h-full items-center overflow-x-auto' : 'h-full items-center gap-1.5 overflow-x-auto py-1.5',
+            isWrapLayout ? 'wrap-mode' : '',
+            isWrapLayout && isClassicLayout ? 'classic-wrap' : '',
+          ]"
           :style="tabsContainerStyle"
-          @scroll="updateScrollButtons"
-          @wheel="onTabsWheel"
+          @scroll="!isVerticalLayout && updateScrollButtons()"
+          @wheel="!isVerticalLayout && onTabsWheel($event)"
         >
           <template v-for="entry in stripEntries" :key="entry.key">
             <CustomContextMenu v-if="entry.kind === 'header'" :items="() => getTabGroupMenuItems(entry.tab)" v-slot="{ onContextMenu }">
@@ -1023,6 +1106,7 @@ watch(
                           <Code2 v-else class="h-3.5 w-3.5" />
                         </span>
                       </TabExecutionStatus>
+                      <span v-if="isTabBarCollapsed && isDirtyTab(entry.tab)" class="compact-dirty-tab-marker" aria-hidden="true" />
                       <input
                         v-if="editingTabId === entry.tab.id"
                         v-model="editingTitle"
@@ -1048,7 +1132,7 @@ watch(
                       </button>
                     </div>
                   </TooltipTrigger>
-                  <TooltipContent side="bottom" class="text-xs grid grid-cols-[auto_1fr] gap-x-2">
+                  <TooltipContent :side="tabTooltipSide" class="text-xs grid grid-cols-[auto_1fr] gap-x-2">
                     <template v-for="line in tabTooltipLines(entry.tab, t)" :key="line.label">
                       <span class="text-muted-foreground">{{ line.label }}</span>
                       <span>{{ line.value }}</span>
@@ -1123,6 +1207,8 @@ watch(
         </Popover>
       </div>
     </div>
+    <!-- Dragging any pane's handle resizes the shared vertical width; every pane follows. -->
+    <div v-if="isVerticalLayout && !isTabBarCollapsed" class="panel-resize-handle" :class="settingsStore.editorSettings.tabPlacement === 'right' ? 'panel-resize-handle--left' : 'panel-resize-handle--right'" @mousedown="emit('start-resize', $event)" />
     <Dialog v-model:open="tabGroupEditorOpen">
       <DialogContent class="sm:max-w-[400px]">
         <DialogHeader>

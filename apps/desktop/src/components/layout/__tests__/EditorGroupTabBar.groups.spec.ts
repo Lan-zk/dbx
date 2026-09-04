@@ -101,6 +101,56 @@ describe("EditorGroupTabBar semantic tab groups", () => {
   }
 });
 
+describe("EditorGroupTabBar vertical placement", () => {
+  const groupSource = readFileSync(resolve(specDir, "../EditorGroup.vue"), "utf8");
+  const workspaceSource = readFileSync(resolve(specDir, "../SqlEditorWorkspace.vue"), "utf8");
+  const appSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../App.vue"), "utf8");
+
+  it("renders each pane's own bar as a vertical strip when placement is left/right", () => {
+    expect(source).toContain('const isVerticalLayout = computed(() => settingsStore.editorSettings.tabPlacement === "left" || settingsStore.editorSettings.tabPlacement === "right");');
+    expect(source).toContain('isVerticalLayout.value && props.tabBarCollapsed ? "vertical-tab-layout--collapsed" : ""');
+    // The strip flips to a column with vertical scrolling; no horizontal strip remains.
+    expect(source).toContain("isVerticalLayout ? 'flex-col items-stretch overflow-y-auto overflow-x-hidden py-1'");
+  });
+
+  it("positions each pane's bar by the global placement without mixing directions", () => {
+    expect(groupSource).toContain('case "bottom":');
+    expect(groupSource).toContain('return "flex-col-reverse";');
+    expect(groupSource).toContain('case "left":');
+    expect(groupSource).toContain('return "flex-row";');
+    expect(groupSource).toContain('case "right":');
+    expect(groupSource).toContain('return "flex-row-reverse";');
+    // The editor toolbar stays atop the pane's content column in every placement.
+    expect(groupSource).toContain('class="flex min-h-0 min-w-0 flex-1 flex-col"');
+  });
+
+  it("shares the vertical width/collapse state from App through the pane chain", () => {
+    expect(appSource).toContain(':tab-bar-width="tabBarWidth"');
+    expect(appSource).toContain(':tab-bar-collapsed="tabBarCollapsed"');
+    expect(appSource).toContain('@start-resize="startTabBarResize"');
+    expect(appSource).toContain('@toggle-collapse="toggleTabBarCollapsed"');
+    expect(workspaceSource).toContain(':tab-bar-width="tabBarWidth"');
+    expect(workspaceSource).toContain("@start-resize=\"emit('start-resize', $event)\"");
+    expect(groupSource).toContain(':tab-bar-width="tabBarWidth"');
+    // Dragging any pane's handle drives the shared resize handler.
+    expect(source).toContain("@mousedown=\"emit('start-resize', $event)\"");
+    expect(source).toContain("@click=\"emit('toggle-collapse')\"");
+  });
+
+  it("keeps horizontal placements immune to the persisted collapse state", () => {
+    expect(source).toContain("const isTabBarCollapsed = computed(() => isVerticalLayout.value && !!props.tabBarCollapsed);");
+    expect(source).toContain("if (!isVerticalLayout.value) return undefined;");
+  });
+
+  it("uses the sidebar rail and soft active shadow for vertical pills", () => {
+    expect(sharedStyles).toContain(".vertical-tab-layout .tab-group-tab::before");
+    expect(sharedStyles).toContain('.vertical-tab-layout .app-tab-pill[data-active-tab="true"]');
+    expect(sharedStyles).toContain("inset 0 0 0 1px color-mix");
+    expect(sharedStyles).toContain(".vertical-tab-layout .tab-group-header:not(.tab-group-header--collapsed)::after");
+    expect(sharedStyles).toContain("margin-inline: 2.5rem 0.5rem;");
+  });
+});
+
 function createHost(): HTMLDivElement {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -202,7 +252,7 @@ describe("EditorGroupTabBar group behavior", () => {
     const settings = useSettingsStore();
     settings.editorSettings.tabGroupMode = "connection";
     const pgA = store.createTab("pg-1", "app", "PG 1", "query");
-    const pgB = store.createTab("pg-1", "app", "PG 2", "query");
+    store.createTab("pg-1", "app", "PG 2", "query");
     const my = store.createTab("mysql-1", "app", "MY 1", "query");
     const mainGroup = store.groups[0];
     const { app, host } = mountBar(mainGroup.id, store.tabs.slice(), pgA, pinia);
