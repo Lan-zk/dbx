@@ -17,6 +17,7 @@ const props = defineProps<
   ContentAreaSurfaceProps & {
     tabBarWidth?: number;
     tabBarCollapsed?: boolean;
+    canDetachTabs?: boolean;
   }
 >();
 const emit = defineEmits<
@@ -25,6 +26,7 @@ const emit = defineEmits<
     "toggle-zen-mode": [];
     "start-resize": [event: MouseEvent];
     "toggle-collapse": [];
+    "detach-tab": [tab: QueryTab];
   }
 >();
 
@@ -212,6 +214,7 @@ function handleFocusStatement(tabId: string, range: StatementRange | null): bool
               :active-tab-id="group.activeTabId"
               :tab-bar-width="tabBarWidth"
               :tab-bar-collapsed="tabBarCollapsed"
+              :can-detach-tabs="canDetachTabs"
               class="h-full"
               v-bind="editorGroupBindings"
               @focus-group="queryStore.focusGroup($event)"
@@ -220,6 +223,7 @@ function handleFocusStatement(tabId: string, range: StatementRange | null): bool
               @toggle-zen-mode="emit('toggle-zen-mode')"
               @start-resize="emit('start-resize', $event)"
               @toggle-collapse="emit('toggle-collapse')"
+              @detach-tab="emit('detach-tab', $event)"
             />
           </Pane>
         </Splitpanes>

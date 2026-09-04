@@ -162,12 +162,13 @@ async function settle() {
   await nextTick();
 }
 
-function mountBar(groupId: string, tabs: ReturnType<ReturnType<typeof useQueryStore>["tabs"]>[number][], activeTabId: string | null, activePinia: ReturnType<typeof createPinia>) {
+function mountBar(groupId: string, tabs: ReturnType<ReturnType<typeof useQueryStore>["tabs"]>[number][], activeTabId: string | null, activePinia: ReturnType<typeof createPinia>, extraProps: Record<string, unknown> = {}) {
   const host = createHost();
   const app = createApp(EditorGroupTabBar, {
     groupId,
     tabs,
     activeTabId,
+    ...extraProps,
   });
   app.use(activePinia);
   app.use(
@@ -214,6 +215,7 @@ function mountBar(groupId: string, tabs: ReturnType<ReturnType<typeof useQuerySt
             tabSortTitle: "Title",
           },
           tabs: {
+            openInNewWindow: "Open in new window",
             settingsSaveFailed: "Save failed: {message}",
             editGroupTitle: "Edit group {name}",
             groupName: "Name",
@@ -313,6 +315,38 @@ describe("EditorGroupTabBar group behavior", () => {
     // second-group lost its only tab and was pruned; pgB is gone from main too.
     expect(store.groups.map((group) => group.id)).toEqual([mainGroup.id]);
     expect(store.groups[0]?.tabIds).toEqual([my]);
+
+    app.unmount();
+    host.remove();
+  });
+
+  it("offers the detach entry only for query and data tabs and emits the tab upward", async () => {
+    const store = useQueryStore();
+    const queryId = store.createTab("pg-1", "app", "PG 1", "query");
+    const mongoId = store.createTab("mongo-1", "app", "MG 1", "mongo");
+    const mainGroup = store.groups[0];
+    const detached: string[] = [];
+    const { app, host } = mountBar(mainGroup.id, store.tabs.slice(), queryId, pinia, { canDetachTabs: true, "onDetach-tab": (tab: { id: string }) => detached.push(tab.id) });
+    await settle();
+
+    const openMenu = async (tabId: string) => {
+      host.querySelector<HTMLElement>(`[data-tab-id="${tabId}"]`)!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+      await settle();
+      const menu = document.body.querySelector<HTMLElement>("[data-dbx-context-menu]")!;
+      return Array.from(menu.querySelectorAll<HTMLButtonElement>("button"));
+    };
+
+    // Query tab: the entry exists and routes the whole tab object upward.
+    const queryItems = await openMenu(queryId);
+    const detachItem = queryItems.find((button) => button.textContent?.includes("Open in new window"));
+    expect(detachItem).toBeDefined();
+    detachItem!.click();
+    await settle();
+    expect(detached).toEqual([queryId]);
+
+    // Non-query/data tab: the entry is not rendered at all.
+    const mongoItems = await openMenu(mongoId);
+    expect(mongoItems.find((button) => button.textContent?.includes("Open in new window"))).toBeUndefined();
 
     app.unmount();
     host.remove();

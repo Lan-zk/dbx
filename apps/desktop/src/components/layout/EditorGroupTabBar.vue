@@ -93,6 +93,8 @@ const props = defineProps<{
   /** Shared vertical-strip width/collapse state owned by App (usePanelResize). */
   tabBarWidth?: number;
   tabBarCollapsed?: boolean;
+  /** Detaching tabs into their own window is a desktop-only capability. */
+  canDetachTabs?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -101,6 +103,7 @@ const emit = defineEmits<{
   "toggle-zen-mode": [];
   "start-resize": [event: MouseEvent];
   "toggle-collapse": [];
+  "detach-tab": [tab: QueryTab];
 }>();
 
 const { t } = useI18n();
@@ -652,6 +655,10 @@ function canRenameTab(tab: QueryTab) {
   return tab.mode === "query";
 }
 
+function isDetachableTab(tab: QueryTab) {
+  return tab.mode === "query" || tab.mode === "data";
+}
+
 function startRenameTab(tab: QueryTab) {
   if (!canRenameTab(tab)) {
     return;
@@ -738,6 +745,12 @@ function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
         }
       },
       icon: Copy,
+    },
+    {
+      label: t("tabs.openInNewWindow"),
+      action: () => emit("detach-tab", tab),
+      icon: Maximize2,
+      visible: !!props.canDetachTabs && isDetachableTab(tab),
     },
     createLocateTabMenuItem({
       t,
