@@ -70,11 +70,11 @@ describe("EditorGroupTabBar semantic tab groups", () => {
   });
 
   it("closes the global semantic group by key, not just this pane's cluster", () => {
-    // D1/D3: closing a group must reach every pane, so the lookup queries the
-    // whole store instead of the bar's display list — and stays within the
-    // trigger's pinned section (pinned and regular clusters are independent).
+    // D1 (amended): closing a cluster is destructive and stays bar-local —
+    // scoped to this pane's tabs (props.tabs), still within the trigger's
+    // pinned section. Profile edits (rename/color/reset) keep global reach.
     const closeGroup = sourceBetween("function tabsInSemanticGroup", "function getTabPreferenceMenuItems");
-    expect(closeGroup).toContain("queryStore.tabs.filter((item) => item.pinned === tab.pinned && tabGroupKey(item) === groupKey)");
+    expect(closeGroup).toContain("props.tabs.filter((item) => item.pinned === tab.pinned && tabGroupKey(item) === groupKey)");
     expect(closeGroup).toContain("queryStore.closeTabsByIds(tabsToClose, finalActiveTabId)");
   });
 
@@ -300,7 +300,7 @@ describe("EditorGroupTabBar group behavior", () => {
     host.remove();
   });
 
-  it("closing a group removes its tabs from every pane and prunes emptied panes", async () => {
+  it("closing a group stays within the invoking pane, sparing the same-key cluster elsewhere", async () => {
     const store = useQueryStore();
     const settings = useSettingsStore();
     settings.editorSettings.tabGroupMode = "connection";
@@ -315,7 +315,8 @@ describe("EditorGroupTabBar group behavior", () => {
     await settle();
 
     // The pg cluster spans main (pgA) and second-group (pgB). Closing the
-    // group from this pane's menu must close both and prune the emptied pane.
+    // group from THIS pane's menu is bar-local: main loses its pg cluster,
+    // while the same-key cluster in second-group survives untouched.
     const pgPill = host.querySelector<HTMLElement>(`[data-tab-id="${pgA}"]`)!;
     expect(pgPill).not.toBeNull();
     pgPill.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
@@ -329,10 +330,12 @@ describe("EditorGroupTabBar group behavior", () => {
     await settle();
 
     const remainingIds = store.tabs.map((tab) => tab.id);
-    expect(remainingIds).toEqual([my]);
-    // second-group lost its only tab and was pruned; pgB is gone from main too.
-    expect(store.groups.map((group) => group.id)).toEqual([mainGroup.id]);
-    expect(store.groups[0]?.tabIds).toEqual([my]);
+    expect(remainingIds).not.toContain(pgA);
+    expect(remainingIds).toEqual(expect.arrayContaining([pgB, my]));
+    // second-group keeps its tab, so it is not pruned either.
+    expect(store.groups.map((group) => group.id)).toEqual(expect.arrayContaining(["second-group"]));
+    expect(store.groups.find((group) => group.id === "second-group")?.tabIds).toEqual([pgB]);
+    expect(store.groups.find((group) => group.id === mainGroup.id)?.tabIds).toEqual([my]);
 
     app.unmount();
     host.remove();

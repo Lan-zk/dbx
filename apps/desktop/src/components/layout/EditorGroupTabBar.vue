@@ -204,9 +204,10 @@ watch(
  * Semantic tab groups (pills) are a render-time clustering of the tabs this
  * pane's strip displays, keyed by the global tabGroupMode. Names/colors live
  * in the global tabGroupCustomizations profile store, so every pane renders
- * the same pill identity for the same key. Group actions that mutate state —
- * rename, recolor, reset, close — act on the global semantic group: they
- * query the whole store by key and therefore affect every pane at once.
+ * the same pill identity for the same key. Profile actions — rename, recolor,
+ * reset — act on that global profile and therefore reach every pane. Closing
+ * a cluster is the one destructive action and stays bar-local: it removes
+ * only this pane's tabs of the key (see tabsInSemanticGroup).
  */
 const tabGroupItems = computed(() => [
   { value: "none", label: t("settings.tabGroupNone") },
@@ -419,17 +420,22 @@ async function resetTabGroupCustomization(tab?: QueryTab) {
   if ((await persistTabGroupCustomization("", "")) && !tab) tabGroupEditorOpen.value = false;
 }
 
-/** All tabs in the store carrying this tab's group key — across every pane. */
+/**
+ * The semantic cluster as displayed in THIS pane's strip: same group key,
+ * same pinned section. Closing a cluster is a destructive, bar-local action —
+ * the same-key cluster in another pane is left untouched, while profile edits
+ * (rename/color/reset) keep their global reach.
+ */
 function tabsInSemanticGroup(tab: QueryTab) {
   if (settingsStore.editorSettings.tabGroupMode === "none") return [];
   const groupKey = tabGroupKey(tab);
-  return queryStore.tabs.filter((item) => item.pinned === tab.pinned && tabGroupKey(item) === groupKey);
+  return props.tabs.filter((item) => item.pinned === tab.pinned && tabGroupKey(item) === groupKey);
 }
 
 /**
- * Closes the global semantic group: every tab with this key, in every pane.
- * The store's batch close prunes panes emptied by the removal, so the pane
- * invariant (panes never die with their tabs inside) is preserved.
+ * Closes this pane's cluster of the semantic group. The store's batch close
+ * prunes the pane if the removal empties it, so the pane invariant (panes
+ * never die with their tabs inside) is preserved.
  */
 function closeTabGroup(tab: QueryTab) {
   const tabsToClose = tabsInSemanticGroup(tab).map((item) => item.id);
