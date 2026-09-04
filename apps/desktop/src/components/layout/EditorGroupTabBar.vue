@@ -30,22 +30,55 @@ const TAB_DRAG_HORIZONTAL_THRESHOLD = 24;
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import type { CSSProperties } from "vue";
 import { useI18n } from "vue-i18n";
-import { AlertTriangle, ArrowDown, ArrowRight, CalendarClock, ChevronDown, Code2, Copy, Database, Gauge, KeyRound, Maximize2, Minimize2, Network, PencilRuler, Pin, RotateCw, Search, ShieldCheck, Table2, TableProperties, X, Activity } from "@lucide/vue";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowDownUp,
+  ArrowRight,
+  CalendarClock,
+  ChevronDown,
+  Code2,
+  Copy,
+  Database,
+  Gauge,
+  KeyRound,
+  ListFilter,
+  Maximize2,
+  Minimize2,
+  Network,
+  PanelTop,
+  Pencil,
+  PencilRuler,
+  Pin,
+  RotateCcw,
+  RotateCw,
+  Search,
+  ShieldCheck,
+  Table2,
+  TableProperties,
+  X,
+  Activity,
+} from "@lucide/vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
 import TabExecutionStatus from "@/components/layout/TabExecutionStatus.vue";
 import ReadOnlySessionControl from "@/components/connection/ReadOnlySessionControl.vue";
+import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import type { EditorSettings } from "@/stores/settingsStore";
 import { useTabScroll } from "@/composables/useTabScroll";
 import { useToast } from "@/composables/useToast";
+import { hexToRgba } from "@/lib/common/color";
 import { copyToClipboard } from "@/lib/common/clipboard";
 import { parseTabDragPayload, serializeTabDragPayload } from "@/lib/tabs/tabDrag";
 import { createCloseAllTabMenuItem, createCloseLeftTabMenuItem, createCloseOtherTabMenuItem, createCloseRightTabMenuItem, createCloseTabMenuItem, createLocateTabMenuItem, createPinTabMenuItem, createRenameDuplicateTabItems } from "@/lib/tabs/tabMenu";
-import { dirtyTabTitleStyle, tabColorStyle as sharedTabColorStyle, tabDatabaseIconType, tabDisplayTitle, tabIconClass, tabTooltipLines } from "@/lib/tabs/tabPresentation";
+import { connectionColor, dirtyTabTitleStyle, tabColorStyle as sharedTabColorStyle, tabDatabaseIconType, tabDisplayTitle, tabIconClass, tabTooltipLines } from "@/lib/tabs/tabPresentation";
 import { activeTabSidebarTarget } from "@/lib/sidebar/sidebarActiveTabTarget";
 import "./appTabBar.css";
 import type { QueryTab } from "@/types/database";
@@ -65,6 +98,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const queryStore = useQueryStore();
 const settingsStore = useSettingsStore();
+const connectionStore = useConnectionStore();
 const { toast } = useToast();
 const tabsContainerRef = ref<HTMLElement | null>(null);
 const { hasTabOverflow, scrollThumbLeftPercent, scrollThumbWidthPercent, isScrollbarDragging, updateScrollButtons, onTabsWheel, startScrollbarDrag } = useTabScroll(tabsContainerRef);
@@ -123,6 +157,338 @@ watch(tabOverflowOpen, (open) => {
 
 const showOverflowControl = computed(() => props.tabs.length > 0 && hasTabOverflow.value && !isWrapLayout.value);
 const tabTailDragRegionClass = computed(() => (showOverflowControl.value || isWrapLayout.value ? "w-0 flex-none self-stretch" : "min-w-8 flex-1 self-stretch"));
+
+/**
+ * Semantic tab groups (pills) are a render-time clustering of the tabs this
+ * pane's strip displays, keyed by the global tabGroupMode. Names/colors live
+ * in the global tabGroupCustomizations profile store, so every pane renders
+ * the same pill identity for the same key. Group actions that mutate state —
+ * rename, recolor, reset, close — act on the global semantic group: they
+ * query the whole store by key and therefore affect every pane at once.
+ */
+const tabGroupItems = computed(() => [
+  { value: "none", label: t("settings.tabGroupNone") },
+  { value: "database-type", label: t("settings.tabGroupDatabaseType") },
+  { value: "connection", label: t("settings.tabGroupConnection") },
+]);
+const tabSortItems = computed(() => [
+  { value: "manual", label: t("settings.tabSortManual") },
+  { value: "created-asc", label: t("settings.tabSortCreated") },
+  { value: "title-asc", label: t("settings.tabSortTitle") },
+]);
+const tabPlacementItems = computed(() => [
+  { value: "top", label: t("settings.tabPlacementTop") },
+  { value: "bottom", label: t("settings.tabPlacementBottom") },
+  { value: "left", label: t("settings.tabPlacementLeft") },
+  { value: "right", label: t("settings.tabPlacementRight") },
+]);
+
+type TabPreferencePatch = Partial<Pick<EditorSettings, "tabPlacement" | "tabGroupMode" | "tabSortMode" | "tabGroupCustomizations">>;
+
+async function persistTabPreferences(partial: TabPreferencePatch) {
+  try {
+    await settingsStore.updateEditorSettingsAndPersist(partial);
+  } catch (error) {
+    toast(t("tabs.settingsSaveFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+  }
+}
+
+function updateTabGroupMode(value: string) {
+  if (value === "none" || value === "database-type" || value === "connection") void persistTabPreferences({ tabGroupMode: value });
+}
+
+function updateTabSortMode(value: string) {
+  if (value === "manual" || value === "created-asc" || value === "title-asc") void persistTabPreferences({ tabSortMode: value });
+}
+
+function updateTabPlacement(value: string) {
+  if (value === "top" || value === "bottom" || value === "left" || value === "right") void persistTabPreferences({ tabPlacement: value });
+}
+
+function tabGroupKey(tab: QueryTab) {
+  const connection = connectionStore.getConfig(tab.connectionId);
+  if (settingsStore.editorSettings.tabGroupMode === "connection") return tab.connectionId;
+  return connection?.driver_profile || connection?.db_type || tab.connectionId || "unknown";
+}
+
+function tabTitleText(tab: QueryTab) {
+  return tabDisplayTitle(tab, t);
+}
+
+/**
+ * Sorts a section of this pane's tabs for display. With a group mode active,
+ * tabs cluster by group key first; within a cluster (and entirely under
+ * manual mode) the stored per-pane order wins unless another sort mode is set.
+ */
+function sortDisplayedTabs(tabs: QueryTab[]) {
+  const sortMode = settingsStore.editorSettings.tabSortMode;
+  const groupMode = settingsStore.editorSettings.tabGroupMode;
+  return tabs
+    .map((tab, index) => ({ tab, index }))
+    .sort((left, right) => {
+      if (groupMode !== "none") {
+        const group = tabGroupKey(left.tab).localeCompare(tabGroupKey(right.tab), undefined, { sensitivity: "base", numeric: true });
+        if (group) return group;
+      }
+      if (sortMode === "manual") return left.index - right.index;
+      if (sortMode === "created-asc") {
+        const created = (left.tab.createdAt ?? left.index) - (right.tab.createdAt ?? right.index);
+        if (created) return created;
+      } else {
+        const title = tabTitleText(left.tab).localeCompare(tabTitleText(right.tab), undefined, { sensitivity: "base", numeric: true });
+        if (title) return title;
+      }
+      return left.index - right.index;
+    })
+    .map(({ tab }) => tab);
+}
+
+const sortedPinnedTabs = computed(() => sortDisplayedTabs(props.tabs.filter((tab) => tab.pinned)));
+const sortedRegularTabs = computed(() => sortDisplayedTabs(props.tabs.filter((tab) => !tab.pinned)));
+
+const collapsedTabGroups = ref<Set<string>>(new Set());
+const tabGroupPalette = ["#2563eb", "#d97706", "#7c3aed", "#059669", "#dc2626", "#0891b2", "#db2777", "#475569"];
+const tabGroupEditorOpen = ref(false);
+const editingTabGroupKey = ref("");
+const editingTabGroupDefaultLabel = ref("");
+const editingTabGroupName = ref("");
+const editingTabGroupColor = ref("");
+const editingTabGroupFallbackColor = ref(tabGroupPalette[0]!);
+
+function tabGroupDefaultLabel(tab: QueryTab) {
+  const connection = connectionStore.getConfig(tab.connectionId);
+  if (settingsStore.editorSettings.tabGroupMode === "connection") return connection?.name || tab.connectionId;
+  return connection?.driver_label || connection?.driver_profile || connection?.db_type || tab.connectionId;
+}
+
+function tabGroupCustomizationKey(tab: QueryTab) {
+  return `${settingsStore.editorSettings.tabGroupMode}:${tabGroupKey(tab)}`;
+}
+
+function tabGroupCustomization(tab: QueryTab) {
+  return settingsStore.editorSettings.tabGroupCustomizations[tabGroupCustomizationKey(tab)];
+}
+
+function tabGroupLabel(tab: QueryTab) {
+  return tabGroupCustomization(tab)?.name || tabGroupDefaultLabel(tab);
+}
+
+// Pinned and regular tabs form separate clusters even under the same key.
+function tabGroupId(tab: QueryTab) {
+  return `${tab.pinned ? "fixed" : "regular"}:${tabGroupKey(tab)}`;
+}
+
+function isTabGroupCollapsed(tab: QueryTab) {
+  if (settingsStore.editorSettings.tabGroupMode === "none") return false;
+  return collapsedTabGroups.value.has(tabGroupId(tab));
+}
+
+function isTabGroupActive(tab: QueryTab) {
+  const section = tab.pinned ? sortedPinnedTabs.value : sortedRegularTabs.value;
+  const groupKey = tabGroupKey(tab);
+  return section.some((item) => tabGroupKey(item) === groupKey && item.id === props.activeTabId);
+}
+
+function toggleTabGroup(tab: QueryTab) {
+  const groupId = tabGroupId(tab);
+  const next = new Set(collapsedTabGroups.value);
+  if (next.has(groupId)) next.delete(groupId);
+  else next.add(groupId);
+  collapsedTabGroups.value = next;
+  nextTick(updateScrollButtons);
+}
+
+function expandTabGroupForTab(tabId: string | null) {
+  if (!tabId || settingsStore.editorSettings.tabGroupMode === "none") return;
+  const tab = queryStore.tabs.find((item) => item.id === tabId);
+  if (!tab) return;
+  const groupId = tabGroupId(tab);
+  if (!collapsedTabGroups.value.has(groupId)) return;
+  const next = new Set(collapsedTabGroups.value);
+  next.delete(groupId);
+  collapsedTabGroups.value = next;
+}
+
+function defaultTabGroupColor(tab: QueryTab) {
+  const connectionGroupColor = settingsStore.editorSettings.tabGroupMode === "connection" ? connectionColor(tab.connectionId) : undefined;
+  let hash = 0;
+  for (const character of tabGroupKey(tab)) hash = (hash * 31 + character.codePointAt(0)!) | 0;
+  return connectionGroupColor || tabGroupPalette[Math.abs(hash) % tabGroupPalette.length]!;
+}
+
+function resolvedTabGroupColor(tab: QueryTab) {
+  return tabGroupCustomization(tab)?.color || defaultTabGroupColor(tab);
+}
+
+function groupColorStyle(color: string): CSSProperties {
+  return {
+    "--tab-group-color": color,
+    "--tab-group-soft": hexToRgba(color, 0.12),
+    "--tab-group-rail": hexToRgba(color, 0.3),
+  } as CSSProperties;
+}
+
+function tabGroupStyle(tab: QueryTab): CSSProperties {
+  return groupColorStyle(resolvedTabGroupColor(tab));
+}
+
+const tabGroupEditorPreviewStyle = computed(() => groupColorStyle(editingTabGroupColor.value || editingTabGroupFallbackColor.value));
+const editingTabGroupHasCustomization = computed(() => {
+  const customization = settingsStore.editorSettings.tabGroupCustomizations[editingTabGroupKey.value];
+  return !!(customization?.name || customization?.color);
+});
+
+function openTabGroupEditor(tab: QueryTab) {
+  const customization = tabGroupCustomization(tab);
+  editingTabGroupKey.value = tabGroupCustomizationKey(tab);
+  editingTabGroupDefaultLabel.value = tabGroupDefaultLabel(tab);
+  editingTabGroupName.value = customization?.name || "";
+  editingTabGroupColor.value = customization?.color || "";
+  editingTabGroupFallbackColor.value = defaultTabGroupColor(tab);
+  tabGroupEditorOpen.value = true;
+  nextTick(() => document.querySelector<HTMLInputElement>("[data-tab-group-name-input]")?.focus());
+}
+
+async function persistTabGroupCustomization(name: string, color: string) {
+  if (!editingTabGroupKey.value) return false;
+  const customizations = { ...settingsStore.editorSettings.tabGroupCustomizations };
+  const normalizedName = name.trim();
+  if (normalizedName || color) customizations[editingTabGroupKey.value] = { ...(normalizedName ? { name: normalizedName } : {}), ...(color ? { color } : {}) };
+  else delete customizations[editingTabGroupKey.value];
+  try {
+    await settingsStore.updateEditorSettingsAndPersist({ tabGroupCustomizations: customizations });
+    return true;
+  } catch (error) {
+    toast(t("tabs.settingsSaveFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+    return false;
+  }
+}
+
+async function saveTabGroupCustomization() {
+  if (await persistTabGroupCustomization(editingTabGroupName.value, editingTabGroupColor.value)) tabGroupEditorOpen.value = false;
+}
+
+function updateCustomTabGroupColor(event: Event) {
+  editingTabGroupColor.value = (event.target as HTMLInputElement).value;
+}
+
+async function resetTabGroupCustomization(tab?: QueryTab) {
+  if (tab) editingTabGroupKey.value = tabGroupCustomizationKey(tab);
+  if ((await persistTabGroupCustomization("", "")) && !tab) tabGroupEditorOpen.value = false;
+}
+
+/** All tabs in the store carrying this tab's group key — across every pane. */
+function tabsInSemanticGroup(tab: QueryTab) {
+  if (settingsStore.editorSettings.tabGroupMode === "none") return [];
+  const groupKey = tabGroupKey(tab);
+  return queryStore.tabs.filter((item) => tabGroupKey(item) === groupKey);
+}
+
+/**
+ * Closes the global semantic group: every tab with this key, in every pane.
+ * The store's batch close prunes panes emptied by the removal, so the pane
+ * invariant (panes never die with their tabs inside) is preserved.
+ */
+function closeTabGroup(tab: QueryTab) {
+  const tabsToClose = tabsInSemanticGroup(tab).map((item) => item.id);
+  if (tabsToClose.length === 0) return;
+  const finalActiveTabId = queryStore.activeTabId && !tabsToClose.includes(queryStore.activeTabId) ? queryStore.activeTabId : (queryStore.tabs.find((item) => !tabsToClose.includes(item.id))?.id ?? null);
+  queryStore.closeTabsByIds(tabsToClose, finalActiveTabId);
+}
+
+function getTabPreferenceMenuItems(): ContextMenuItem[] {
+  return [
+    {
+      label: t("settings.tabPlacement"),
+      icon: PanelTop,
+      children: tabPlacementItems.value.map((item) => ({
+        label: item.label,
+        checked: item.value === settingsStore.editorSettings.tabPlacement,
+        action: () => updateTabPlacement(item.value),
+      })),
+    },
+    {
+      label: t("settings.tabGroup"),
+      icon: ListFilter,
+      children: tabGroupItems.value.map((item) => ({
+        label: item.label,
+        checked: item.value === settingsStore.editorSettings.tabGroupMode,
+        action: () => updateTabGroupMode(item.value),
+      })),
+    },
+    {
+      label: t("settings.tabSort"),
+      icon: ArrowDownUp,
+      children: tabSortItems.value.map((item) => ({
+        label: item.label,
+        checked: item.value === settingsStore.editorSettings.tabSortMode,
+        action: () => updateTabSortMode(item.value),
+      })),
+    },
+  ];
+}
+
+function getTabGroupMenuItems(tab: QueryTab): ContextMenuItem[] {
+  const customization = tabGroupCustomization(tab);
+  return [
+    {
+      label: t("contextMenu.editTabGroup"),
+      action: () => openTabGroupEditor(tab),
+      icon: Pencil,
+    },
+    {
+      label: t("contextMenu.resetTabGroup"),
+      action: () => resetTabGroupCustomization(tab),
+      icon: RotateCcw,
+      visible: !!(customization?.name || customization?.color),
+    },
+    { label: "", separator: true },
+    ...getTabPreferenceMenuItems(),
+    { label: "", separator: true },
+    {
+      label: t("contextMenu.closeTabGroup"),
+      action: () => closeTabGroup(tab),
+      icon: X,
+      variant: "destructive",
+    },
+  ];
+}
+
+function openTabGroupContextMenu(event: MouseEvent, open: (event: MouseEvent) => void) {
+  event.preventDefault();
+  document.getSelection()?.removeAllRanges();
+  open(event);
+}
+
+type StripEntry = { kind: "header"; key: string; tab: QueryTab; pinned: boolean; count: number } | { kind: "tab"; key: string; tab: QueryTab; groupFirst: boolean; groupLast: boolean; grouping: boolean };
+
+/**
+ * Flattens the strip's two sections (pinned, then regular) into render
+ * entries: a group header before each semantic cluster, then that cluster's
+ * pills. Collapsed clusters contribute no tab entries, only their header.
+ */
+const stripEntries = computed<StripEntry[]>(() => {
+  const entries: StripEntry[] = [];
+  const grouping = settingsStore.editorSettings.tabGroupMode !== "none";
+  for (const [section, pinned] of [
+    [sortedPinnedTabs.value, true],
+    [sortedRegularTabs.value, false],
+  ] as const) {
+    section.forEach((tab, index) => {
+      const first = grouping && (index === 0 || tabGroupKey(section[index - 1]!) !== tabGroupKey(tab));
+      const last = grouping && (index === section.length - 1 || tabGroupKey(section[index + 1]!) !== tabGroupKey(tab));
+      if (first) {
+        const groupKey = tabGroupKey(tab);
+        entries.push({ kind: "header", key: `header:${tab.id}`, tab, pinned, count: section.filter((item) => tabGroupKey(item) === groupKey).length });
+      }
+      if (grouping && isTabGroupCollapsed(tab)) {
+        return;
+      }
+      entries.push({ kind: "tab", key: tab.id, tab, groupFirst: first, groupLast: last, grouping });
+    });
+  }
+  return entries;
+});
 
 function tabColorStyle(tab: QueryTab): CSSProperties | undefined {
   return sharedTabColorStyle(tab, tab.id === props.activeTabId, isClassicLayout.value);
@@ -269,18 +635,29 @@ function closeTab(tab: QueryTab) {
   queryStore.closeTab(tab.id);
 }
 
-function tabsToRightInGroup(tab: QueryTab) {
-  const index = props.tabs.findIndex((item) => item.id === tab.id);
-  return index < 0 ? [] : props.tabs.slice(index + 1);
+/**
+ * Close-left/right operate on this pane's *display* order within the tab's
+ * pinned/regular section, so the menu closes exactly the pills shown on that
+ * side even when a non-manual sort mode reorders the strip.
+ */
+function tabsToLeftInDisplayOrder(tab: QueryTab) {
+  const section = tab.pinned ? sortedPinnedTabs.value : sortedRegularTabs.value;
+  const targetIndex = section.findIndex((item) => item.id === tab.id);
+  return targetIndex < 0 ? [] : section.slice(0, targetIndex);
+}
+
+function tabsToRightInDisplayOrder(tab: QueryTab) {
+  const section = tab.pinned ? sortedPinnedTabs.value : sortedRegularTabs.value;
+  const targetIndex = section.findIndex((item) => item.id === tab.id);
+  return targetIndex < 0 ? [] : section.slice(targetIndex + 1);
 }
 
 function hasTabsToRight(tab: QueryTab) {
-  return tabsToRightInGroup(tab).length > 0;
+  return tabsToRightInDisplayOrder(tab).length > 0;
 }
 
 function hasTabsToLeft(tab: QueryTab) {
-  const index = props.tabs.findIndex((item) => item.id === tab.id);
-  return index > 0 && Boolean(props.tabs[index - 1]?.pinned) === Boolean(tab.pinned);
+  return tabsToLeftInDisplayOrder(tab).length > 0;
 }
 
 function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
@@ -314,6 +691,9 @@ function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
       visible: !!activeTabSidebarTarget(tab),
       onLocate: () => emit("locate-tab", tab),
     }),
+    { label: "", separator: true },
+    ...getTabPreferenceMenuItems(),
+    { label: "", separator: true },
     createPinTabMenuItem({
       label: tab.pinned ? t("contextMenu.unpinTab") : t("contextMenu.pinTab"),
       onToggle: () => queryStore.togglePinnedTab(tab.id),
@@ -360,17 +740,31 @@ function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
     createCloseLeftTabMenuItem({
       label: t("contextMenu.closeLeftTabs"),
       disabled: !hasTabsToLeft(tab),
-      onClose: () => queryStore.closeLeftTabsInGroup(props.groupId, tab.id),
+      onClose: () => {
+        const tabsToClose = tabsToLeftInDisplayOrder(tab).map((item) => item.id);
+        const finalActiveTabId = queryStore.activeTabId && !tabsToClose.includes(queryStore.activeTabId) ? queryStore.activeTabId : tab.id;
+        queryStore.closeTabsByIds(tabsToClose, finalActiveTabId);
+      },
     }),
     createCloseRightTabMenuItem({
       label: t("contextMenu.closeRightTabs"),
       disabled: !hasTabsToRight(tab),
-      onClose: () => queryStore.closeRightTabsInGroup(props.groupId, tab.id),
+      onClose: () => {
+        const tabsToClose = tabsToRightInDisplayOrder(tab).map((item) => item.id);
+        const finalActiveTabId = queryStore.activeTabId && !tabsToClose.includes(queryStore.activeTabId) ? queryStore.activeTabId : tab.id;
+        queryStore.closeTabsByIds(tabsToClose, finalActiveTabId);
+      },
     }),
     createCloseAllTabMenuItem({
       label: t("contextMenu.closeAllTabs"),
       onClose: () => queryStore.closeAllTabsInGroup(props.groupId, tab.id),
     }),
+    {
+      label: t("contextMenu.closeTabGroup"),
+      action: () => closeTabGroup(tab),
+      visible: settingsStore.editorSettings.tabGroupMode !== "none",
+      icon: X,
+    },
     createCloseTabMenuItem({
       label: t("contextMenu.closeTab"),
       onClose: () => closeTab(tab),
@@ -528,7 +922,9 @@ const tabScrollBehavior = ref<ScrollBehavior>("smooth");
 
 watch(
   () => props.activeTabId,
-  () => {
+  (tabId) => {
+    // A tab that just became active must be visible: reveal its group if collapsed.
+    expandTabGroupForTab(tabId);
     nextTick(() => {
       if (!isWrapLayout.value) {
         const container = tabsContainerRef.value;
@@ -554,7 +950,7 @@ watch(
 </script>
 
 <template>
-  <div class="app-tab-bar group-tabbar relative flex w-full min-w-0 shrink-0 overflow-hidden" :class="tabBarClass" :data-group-id="groupId">
+  <div class="app-tab-bar group-tabbar relative flex w-full min-w-0 shrink-0 overflow-hidden" :class="tabBarClass" :data-group-id="groupId" :data-placement="settingsStore.editorSettings.tabPlacement">
     <div class="flex w-full min-w-0 shrink-0 overflow-hidden" :class="isClassicLayout ? 'h-9 items-stretch' : 'h-10 items-center px-2'">
       <div class="app-tab-strip relative h-full min-w-0 flex-1 overflow-hidden">
         <div v-if="showOverflowControl" class="app-tab-scrollbar" :class="{ 'app-tab-scrollbar--dragging': isScrollbarDragging }" @pointerdown="startScrollbarDrag">
@@ -568,78 +964,100 @@ watch(
           @scroll="updateScrollButtons"
           @wheel="onTabsWheel"
         >
-          <CustomContextMenu v-for="tab in tabs" :key="tab.id" :items="getTabMenuItems(tab)" v-slot="{ onContextMenu }">
-            <div :class="isClassicLayout ? 'h-full' : ''" @contextmenu="onContextMenu">
-              <Tooltip>
-                <TooltipTrigger as-child>
-                  <div
-                    class="app-tab-pill group flex cursor-default items-center gap-1 px-2 text-xs transition-colors whitespace-nowrap select-none"
-                    :class="
-                      isClassicLayout
-                        ? ['h-full border-r border-border/80 font-medium dark:border-border/45', tab.id === activeTabId ? 'bg-background text-foreground' : 'text-foreground/70 hover:text-foreground/90']
-                        : ['h-7 rounded-md border', tab.id === activeTabId ? 'text-foreground font-medium' : 'border-border/60 text-foreground/70 hover:border-border hover:text-foreground/90']
-                    "
-                    :style="[tabColorStyle(tab), tabDropStyle(tab)]"
-                    :data-active-tab="tab.id === activeTabId"
-                    :data-tab-id="tab.id"
-                    @pointerdown="handleTabPointerDown($event, tab)"
-                    @click="handleTabClick(tab)"
-                    @dblclick="handleTabDoubleClick(tab, $event)"
-                    @mousedown.middle.prevent="closeTab(tab)"
-                  >
-                    <TabExecutionStatus :tab="tab">
-                      <span class="shrink-0" :class="tabIconClass(tab)">
-                        <AlertTriangle v-if="tab.externalSqlFileMissing" class="h-3.5 w-3.5" />
-                        <Table2 v-else-if="tab.mode === 'data' || tab.mode === 'mongo' || tab.mode === 'redis' || tab.mode === 'hbase'" class="h-3.5 w-3.5" />
-                        <DatabaseIcon v-else-if="tab.mode === 'mq'" :db-type="tabDatabaseIconType(tab)" class="h-3.5 w-3.5" />
-                        <TableProperties v-else-if="tab.mode === 'vector'" class="h-3.5 w-3.5" />
-                        <KeyRound v-else-if="tab.mode === 'etcd' || tab.mode === 'zookeeper' || tab.mode === 'consul'" class="h-3.5 w-3.5" />
-                        <Gauge v-else-if="tab.mode === 'consul-overview' || tab.mode === 'etcd-dashboard' || tab.mode === 'mysql-dashboard' || tab.mode === 'postgres-dashboard' || tab.mode === 'nacos-dashboard'" class="h-3.5 w-3.5" />
-                        <ShieldCheck v-else-if="tab.mode === 'etcd-access-control'" class="h-3.5 w-3.5" />
-                        <Network v-else-if="tab.mode === 'nacos'" class="h-3.5 w-3.5" />
-                        <Database v-else-if="tab.mode === 'databases'" class="h-3.5 w-3.5" />
-                        <TableProperties v-else-if="tab.mode === 'objects'" class="h-3.5 w-3.5" />
-                        <PencilRuler v-else-if="tab.mode === 'structure'" class="h-3.5 w-3.5" />
-                        <CalendarClock v-else-if="tab.mode === 'dameng-jobs'" class="h-3.5 w-3.5" />
-                        <Activity v-else-if="tab.mode === 'processlist' || tab.mode === 'sqlserver-trace'" class="h-3.5 w-3.5" />
-                        <Gauge v-else-if="tab.mode === 'dolt-version-control'" class="h-3.5 w-3.5" />
-                        <Code2 v-else class="h-3.5 w-3.5" />
+          <template v-for="entry in stripEntries" :key="entry.key">
+            <CustomContextMenu v-if="entry.kind === 'header'" :items="() => getTabGroupMenuItems(entry.tab)" v-slot="{ onContextMenu }">
+              <button
+                type="button"
+                class="tab-group-header"
+                :class="{ 'tab-group-header--collapsed': isTabGroupCollapsed(entry.tab), 'tab-group-header--active': isTabGroupActive(entry.tab) }"
+                :style="tabGroupStyle(entry.tab)"
+                :aria-expanded="!isTabGroupCollapsed(entry.tab)"
+                :title="tabGroupLabel(entry.tab)"
+                @click="toggleTabGroup(entry.tab)"
+                @contextmenu="openTabGroupContextMenu($event, onContextMenu)"
+              >
+                <span class="tab-group-header-content">
+                  <span class="tab-group-marker" aria-hidden="true" />
+                  <Pin v-if="entry.pinned" class="tab-group-pin" aria-hidden="true" />
+                  <ChevronDown class="tab-group-chevron" :class="isTabGroupCollapsed(entry.tab) ? '-rotate-90' : ''" aria-hidden="true" />
+                  <span class="tab-group-label">{{ tabGroupLabel(entry.tab) }}</span>
+                  <span v-if="isTabGroupCollapsed(entry.tab)" class="tab-group-count">{{ entry.count }}</span>
+                </span>
+              </button>
+            </CustomContextMenu>
+            <CustomContextMenu v-else :items="getTabMenuItems(entry.tab)" v-slot="{ onContextMenu }">
+              <div :class="isClassicLayout ? 'h-full' : ''" @contextmenu="onContextMenu">
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <div
+                      class="app-tab-pill group flex cursor-default items-center gap-1 px-2 text-xs transition-colors whitespace-nowrap select-none"
+                      :class="
+                        isClassicLayout
+                          ? ['h-full border-r border-border/80 font-medium dark:border-border/45', entry.tab.id === activeTabId ? 'bg-background text-foreground' : 'text-foreground/70 hover:text-foreground/90']
+                          : ['h-7 rounded-md border', entry.tab.id === activeTabId ? 'text-foreground font-medium' : 'border-border/60 text-foreground/70 hover:border-border hover:text-foreground/90']
+                      "
+                      :style="[tabColorStyle(entry.tab), entry.grouping ? tabGroupStyle(entry.tab) : undefined, tabDropStyle(entry.tab)]"
+                      :data-active-tab="entry.tab.id === activeTabId"
+                      :data-tab-id="entry.tab.id"
+                      @pointerdown="handleTabPointerDown($event, entry.tab)"
+                      @click="handleTabClick(entry.tab)"
+                      @dblclick="handleTabDoubleClick(entry.tab, $event)"
+                      @mousedown.middle.prevent="closeTab(entry.tab)"
+                    >
+                      <TabExecutionStatus :tab="entry.tab">
+                        <span class="shrink-0" :class="tabIconClass(entry.tab)">
+                          <AlertTriangle v-if="entry.tab.externalSqlFileMissing" class="h-3.5 w-3.5" />
+                          <Table2 v-else-if="entry.tab.mode === 'data' || entry.tab.mode === 'mongo' || entry.tab.mode === 'redis' || entry.tab.mode === 'hbase'" class="h-3.5 w-3.5" />
+                          <DatabaseIcon v-else-if="entry.tab.mode === 'mq'" :db-type="tabDatabaseIconType(entry.tab)" class="h-3.5 w-3.5" />
+                          <TableProperties v-else-if="entry.tab.mode === 'vector'" class="h-3.5 w-3.5" />
+                          <KeyRound v-else-if="entry.tab.mode === 'etcd' || entry.tab.mode === 'zookeeper' || entry.tab.mode === 'consul'" class="h-3.5 w-3.5" />
+                          <Gauge v-else-if="entry.tab.mode === 'consul-overview' || entry.tab.mode === 'etcd-dashboard' || entry.tab.mode === 'mysql-dashboard' || entry.tab.mode === 'postgres-dashboard' || entry.tab.mode === 'nacos-dashboard'" class="h-3.5 w-3.5" />
+                          <ShieldCheck v-else-if="entry.tab.mode === 'etcd-access-control'" class="h-3.5 w-3.5" />
+                          <Network v-else-if="entry.tab.mode === 'nacos'" class="h-3.5 w-3.5" />
+                          <Database v-else-if="entry.tab.mode === 'databases'" class="h-3.5 w-3.5" />
+                          <TableProperties v-else-if="entry.tab.mode === 'objects'" class="h-3.5 w-3.5" />
+                          <PencilRuler v-else-if="entry.tab.mode === 'structure'" class="h-3.5 w-3.5" />
+                          <CalendarClock v-else-if="entry.tab.mode === 'dameng-jobs'" class="h-3.5 w-3.5" />
+                          <Activity v-else-if="entry.tab.mode === 'processlist' || entry.tab.mode === 'sqlserver-trace'" class="h-3.5 w-3.5" />
+                          <Gauge v-else-if="entry.tab.mode === 'dolt-version-control'" class="h-3.5 w-3.5" />
+                          <Code2 v-else class="h-3.5 w-3.5" />
+                        </span>
+                      </TabExecutionStatus>
+                      <input
+                        v-if="editingTabId === entry.tab.id"
+                        v-model="editingTitle"
+                        :data-tab-title-input="entry.tab.id"
+                        :aria-label="t('contextMenu.renameTab')"
+                        class="h-5 min-w-0 flex-1 rounded border border-ring bg-background px-1.5 text-xs font-normal text-foreground outline-none"
+                        @click.stop
+                        @mousedown.stop
+                        @keydown.enter.prevent="commitRenameTab(entry.tab)"
+                        @keydown.escape.prevent="cancelRenameTab"
+                        @blur="commitRenameTab(entry.tab)"
+                      />
+                      <span v-else class="inline-flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-foreground">
+                        <span v-if="isDirtyTab(entry.tab)" aria-hidden="true" class="dirty-tab-marker">*</span>
+                        <span class="min-w-0 flex-1 truncate" :style="tabTitleStyle(entry.tab)">{{ tabDisplayTitle(entry.tab, t) }}</span>
                       </span>
-                    </TabExecutionStatus>
-                    <input
-                      v-if="editingTabId === tab.id"
-                      v-model="editingTitle"
-                      :data-tab-title-input="tab.id"
-                      :aria-label="t('contextMenu.renameTab')"
-                      class="h-5 min-w-0 flex-1 rounded border border-ring bg-background px-1.5 text-xs font-normal text-foreground outline-none"
-                      @click.stop
-                      @mousedown.stop
-                      @keydown.enter.prevent="commitRenameTab(tab)"
-                      @keydown.escape.prevent="cancelRenameTab"
-                      @blur="commitRenameTab(tab)"
-                    />
-                    <span v-else class="inline-flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-foreground">
-                      <span v-if="isDirtyTab(tab)" aria-hidden="true" class="dirty-tab-marker">*</span>
-                      <span class="min-w-0 flex-1 truncate" :style="tabTitleStyle(tab)">{{ tabDisplayTitle(tab, t) }}</span>
-                    </span>
-                    <ReadOnlySessionControl :connection-id="tab.connectionId" compact />
-                    <button v-if="tab.pinned" class="rounded p-0.5 text-primary hover:bg-muted-foreground/20 shrink-0" :aria-label="t('contextMenu.unpinTab')" :title="t('contextMenu.unpinTab')" @pointerdown.stop @click.stop="queryStore.togglePinnedTab(tab.id)">
-                      <Pin class="h-3 w-3 fill-current" aria-hidden="true" />
-                    </button>
-                    <button class="rounded hover:bg-muted-foreground/20 p-0.5 shrink-0" :aria-label="t('contextMenu.closeTab')" :title="t('contextMenu.closeTab')" @pointerdown.stop @click.stop="closeTab(tab)">
-                      <X class="h-3 w-3" />
-                    </button>
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" class="text-xs grid grid-cols-[auto_1fr] gap-x-2">
-                  <template v-for="line in tabTooltipLines(tab, t)" :key="line.label">
-                    <span class="text-muted-foreground">{{ line.label }}</span>
-                    <span>{{ line.value }}</span>
-                  </template>
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </CustomContextMenu>
+                      <ReadOnlySessionControl :connection-id="entry.tab.connectionId" compact />
+                      <button v-if="entry.tab.pinned" class="rounded p-0.5 text-primary hover:bg-muted-foreground/20 shrink-0" :aria-label="t('contextMenu.unpinTab')" :title="t('contextMenu.unpinTab')" @pointerdown.stop @click.stop="queryStore.togglePinnedTab(entry.tab.id)">
+                        <Pin class="h-3 w-3 fill-current" aria-hidden="true" />
+                      </button>
+                      <button class="rounded hover:bg-muted-foreground/20 p-0.5 shrink-0" :aria-label="t('contextMenu.closeTab')" :title="t('contextMenu.closeTab')" @pointerdown.stop @click.stop="closeTab(entry.tab)">
+                        <X class="h-3 w-3" />
+                      </button>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" class="text-xs grid grid-cols-[auto_1fr] gap-x-2">
+                    <template v-for="line in tabTooltipLines(entry.tab, t)" :key="line.label">
+                      <span class="text-muted-foreground">{{ line.label }}</span>
+                      <span>{{ line.value }}</span>
+                    </template>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            </CustomContextMenu>
+          </template>
           <div :class="tabTailDragRegionClass" data-tauri-drag-region />
         </div>
       </div>
@@ -705,5 +1123,55 @@ watch(
         </Popover>
       </div>
     </div>
+    <Dialog v-model:open="tabGroupEditorOpen">
+      <DialogContent class="sm:max-w-[400px]">
+        <DialogHeader>
+          <DialogTitle class="flex min-w-0 items-center gap-2">
+            <span class="h-4 w-1 shrink-0 rounded-full" :style="{ background: editingTabGroupColor || editingTabGroupFallbackColor }" />
+            <span class="truncate">{{ t("tabs.editGroupTitle", { name: editingTabGroupDefaultLabel }) }}</span>
+          </DialogTitle>
+        </DialogHeader>
+        <div class="space-y-4">
+          <label class="grid gap-1.5 text-sm">
+            <span class="font-medium">{{ t("tabs.groupName") }}</span>
+            <Input v-model="editingTabGroupName" data-tab-group-name-input maxlength="80" :placeholder="editingTabGroupDefaultLabel" class="h-9" @keydown.enter.prevent="saveTabGroupCustomization" />
+          </label>
+          <fieldset class="grid gap-2">
+            <legend class="text-sm font-medium">{{ t("tabs.groupColor") }}</legend>
+            <div class="flex flex-wrap items-center gap-2" :style="tabGroupEditorPreviewStyle">
+              <button type="button" class="tab-group-color-option tab-group-color-option--auto" :class="{ 'tab-group-color-option--selected': editingTabGroupColor === '' }" :aria-label="t('tabs.groupColorAuto')" :title="t('tabs.groupColorAuto')" @click="editingTabGroupColor = ''">
+                <RotateCcw class="h-3.5 w-3.5" />
+              </button>
+              <button
+                v-for="color in tabGroupPalette"
+                :key="color"
+                type="button"
+                class="tab-group-color-option"
+                :class="{ 'tab-group-color-option--selected': editingTabGroupColor === color }"
+                :style="{ '--tab-group-option-color': color }"
+                :aria-label="color"
+                :title="color"
+                @click="editingTabGroupColor = color"
+              />
+              <label
+                class="tab-group-custom-color"
+                :class="{ 'tab-group-color-option--selected': editingTabGroupColor !== '' && !tabGroupPalette.includes(editingTabGroupColor) }"
+                :style="{ '--tab-group-option-color': editingTabGroupColor || editingTabGroupFallbackColor }"
+                :title="t('tabs.groupColorCustom')"
+              >
+                <input type="color" :value="editingTabGroupColor || editingTabGroupFallbackColor" :aria-label="t('tabs.groupColorCustom')" @input="updateCustomTabGroupColor" />
+              </label>
+            </div>
+          </fieldset>
+        </div>
+        <DialogFooter class="sm:justify-between">
+          <Button v-if="editingTabGroupHasCustomization" variant="ghost" class="mr-auto" @click="resetTabGroupCustomization()">{{ t("tabs.resetGroup") }}</Button>
+          <div class="flex justify-end gap-2">
+            <Button variant="outline" @click="tabGroupEditorOpen = false">{{ t("common.cancel") }}</Button>
+            <Button @click="saveTabGroupCustomization">{{ t("common.save") }}</Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
