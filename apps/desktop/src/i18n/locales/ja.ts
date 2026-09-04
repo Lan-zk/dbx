@@ -1481,6 +1481,7 @@ export default withEnglishFallback({
     scrollLeft: "タブを左にスクロール",
     scrollRight: "タブを右にスクロール",
     openTabs: "開いているタブ",
+    openInNewWindow: "新しいウィンドウで開く",
     searchOpenTabs: "開いているタブを検索...",
     collapseTabBar: "タブバーを折りたたむ",
     expandTabBar: "タブバーを展開",

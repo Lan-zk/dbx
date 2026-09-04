@@ -1464,6 +1464,7 @@ export default withEnglishFallback({
     scrollLeft: "Desplazar pestañas a la izquierda",
     scrollRight: "Desplazar pestañas a la derecha",
     openTabs: "Pestañas abiertas",
+    openInNewWindow: "Abrir en una ventana nueva",
     searchOpenTabs: "Buscar pestañas abiertas...",
     collapseTabBar: "Contraer barra de pestañas",
     expandTabBar: "Expandir barra de pestañas",

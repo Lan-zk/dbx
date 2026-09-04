@@ -1462,6 +1462,7 @@ export default withEnglishFallback({
     scrollLeft: "Scorri schede a sinistra",
     scrollRight: "Scorri schede a destra",
     openTabs: "Schede aperte",
+    openInNewWindow: "Apri in una nuova finestra",
     searchOpenTabs: "Cerca schede aperte...",
     collapseTabBar: "Comprimi barra delle schede",
     expandTabBar: "Espandi barra delle schede",

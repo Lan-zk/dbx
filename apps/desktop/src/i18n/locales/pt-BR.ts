@@ -1464,6 +1464,7 @@ export default withEnglishFallback({
     scrollLeft: "Rolar abas para a esquerda",
     scrollRight: "Rolar abas para a direita",
     openTabs: "Abas abertas",
+    openInNewWindow: "Abrir em nova janela",
     searchOpenTabs: "Pesquisar abas abertas...",
     collapseTabBar: "Recolher barra de abas",
     expandTabBar: "Expandir barra de abas",

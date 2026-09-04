@@ -1463,6 +1463,7 @@ export default withEnglishFallback({
     scrollLeft: "向左捲動分頁",
     scrollRight: "向右捲動分頁",
     openTabs: "已開啟的分頁",
+    openInNewWindow: "在新視窗中開啟",
     searchOpenTabs: "搜尋已開啟的分頁...",
     collapseTabBar: "收合分頁列",
     expandTabBar: "展開分頁列",

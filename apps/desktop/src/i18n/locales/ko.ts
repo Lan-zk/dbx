@@ -1368,6 +1368,7 @@ export default withEnglishFallback({
     scrollLeft: "탭을 왼쪽으로 스크롤",
     scrollRight: "탭을 오른쪽으로 스크롤",
     openTabs: "열린 탭",
+    openInNewWindow: "새 창에서 열기",
     searchOpenTabs: "열린 탭 검색...",
     collapseTabBar: "탭 표시줄 접기",
     expandTabBar: "탭 표시줄 펼치기",
