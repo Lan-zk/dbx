@@ -95,6 +95,8 @@ const props = defineProps<{
   tabBarCollapsed?: boolean;
   /** Detaching tabs into their own window is a desktop-only capability. */
   canDetachTabs?: boolean;
+  /** A detached tab is being dragged over this bar — highlight it as the drop target. */
+  detachedDropTarget?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -1041,7 +1043,8 @@ watch(
 </script>
 
 <template>
-  <div class="app-tab-bar group-tabbar relative flex w-full min-w-0 shrink-0 overflow-hidden" :class="tabBarClass" :style="tabBarStyle" :data-group-id="groupId" :data-placement="settingsStore.editorSettings.tabPlacement">
+  <!-- data-main-tab-bar is the drag-back hit-test anchor: dropping a detached window over ANY pane's strip returns the tab. -->
+  <div class="app-tab-bar group-tabbar relative flex w-full min-w-0 shrink-0 overflow-hidden" :class="[tabBarClass, { 'ring-2 ring-primary ring-inset': detachedDropTarget }]" :style="tabBarStyle" data-main-tab-bar :data-group-id="groupId" :data-placement="settingsStore.editorSettings.tabPlacement">
     <!-- Compact vertical toolbar: search, grouping preference, collapse. -->
     <div v-if="isVerticalLayout" class="flex shrink-0 items-center gap-0.5 border-b p-1.5" :class="isTabBarCollapsed ? 'justify-center' : ''">
       <div v-if="!isTabBarCollapsed" class="relative min-w-0 flex-1">

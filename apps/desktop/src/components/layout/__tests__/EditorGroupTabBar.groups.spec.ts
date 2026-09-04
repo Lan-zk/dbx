@@ -300,6 +300,24 @@ describe("EditorGroupTabBar group behavior", () => {
     host.remove();
   });
 
+  it("exposes the drag-back hit-test anchor and highlights itself as the detached drop target", async () => {
+    const store = useQueryStore();
+    const tabId = store.createTab("pg-1", "app", "PG 1", "query");
+    const mainGroup = store.groups[0];
+    const { app, host } = mountBar(mainGroup.id, store.tabs.slice(), tabId, pinia, { detachedDropTarget: true });
+    await settle();
+
+    const bar = host.querySelector<HTMLElement>(".app-tab-bar");
+    // Dropping a detached window over any pane's strip returns the tab, so
+    // every strip must carry the hit-test anchor App unions rects over.
+    expect(bar?.hasAttribute("data-main-tab-bar")).toBe(true);
+    expect(bar?.classList.contains("ring-2")).toBe(true);
+    expect(bar?.classList.contains("ring-inset")).toBe(true);
+
+    app.unmount();
+    host.remove();
+  });
+
   it("closing a group stays within the invoking pane, sparing the same-key cluster elsewhere", async () => {
     const store = useQueryStore();
     const settings = useSettingsStore();

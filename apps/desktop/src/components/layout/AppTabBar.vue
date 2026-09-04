@@ -197,7 +197,7 @@ function handleCancelClose() {
 </script>
 
 <template>
-  <div v-if="driverStoreOpen || settingsPageOpen" class="app-tab-bar relative flex w-full min-w-0 shrink-0 overflow-hidden border-b bg-background">
+  <div v-if="driverStoreOpen || settingsPageOpen" class="app-tab-bar relative flex w-full min-w-0 shrink-0 overflow-hidden border-b bg-background" data-main-tab-bar :class="{ 'ring-2 ring-primary ring-inset': detachedDropTarget }">
     <div class="flex h-10 w-full min-w-0 shrink-0 items-center overflow-hidden px-2">
       <div class="app-tab-strip relative h-full min-w-0 flex-1 overflow-hidden">
         <div class="app-tab-scroll flex h-full w-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-1.5">

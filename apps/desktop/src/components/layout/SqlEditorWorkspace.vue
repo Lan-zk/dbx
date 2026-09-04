@@ -18,6 +18,7 @@ const props = defineProps<
     tabBarWidth?: number;
     tabBarCollapsed?: boolean;
     canDetachTabs?: boolean;
+    detachedDropTarget?: boolean;
   }
 >();
 const emit = defineEmits<
@@ -215,6 +216,7 @@ function handleFocusStatement(tabId: string, range: StatementRange | null): bool
               :tab-bar-width="tabBarWidth"
               :tab-bar-collapsed="tabBarCollapsed"
               :can-detach-tabs="canDetachTabs"
+              :detached-drop-target="detachedDropTarget"
               class="h-full"
               v-bind="editorGroupBindings"
               @focus-group="queryStore.focusGroup($event)"

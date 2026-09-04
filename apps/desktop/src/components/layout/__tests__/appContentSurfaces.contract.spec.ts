@@ -26,4 +26,15 @@ describe("App main content surface structure", () => {
     expect(appSource).toContain('<div v-if="queryStore.tabs.length > 0" v-show="!driverStoreActive && !settingsStore.settingsPageActive"');
     expect(appSource).toContain('v-else-if="queryStore.tabs.length === 0 && !driverStoreActive && !settingsStore.settingsPageActive"');
   });
+
+  it("anchors the drag-back hit test on every pane strip and the special-surfaces bar", () => {
+    const groupBarSource = readFileSync(new URL("../EditorGroupTabBar.vue", import.meta.url), "utf8");
+    const slimBarSource = readFileSync(new URL("../AppTabBar.vue", import.meta.url), "utf8");
+    expect(groupBarSource).toContain("data-main-tab-bar");
+    expect(groupBarSource).toContain("'ring-2 ring-primary ring-inset': detachedDropTarget");
+    expect(slimBarSource).toContain("data-main-tab-bar");
+    expect(slimBarSource).toContain("'ring-2 ring-primary ring-inset': detachedDropTarget");
+    // The split workspace renders several bars; the hit test must union their rects.
+    expect(appSource).toContain('querySelectorAll<HTMLElement>("[data-main-tab-bar]")');
+  });
 });

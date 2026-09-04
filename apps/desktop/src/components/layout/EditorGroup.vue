@@ -26,6 +26,7 @@ const props = defineProps<
     tabBarWidth?: number;
     tabBarCollapsed?: boolean;
     canDetachTabs?: boolean;
+    detachedDropTarget?: boolean;
   }
 >();
 
@@ -135,6 +136,7 @@ const groupExecutableSql = computed(() => {
       :tab-bar-width="tabBarWidth"
       :tab-bar-collapsed="tabBarCollapsed"
       :can-detach-tabs="canDetachTabs"
+      :detached-drop-target="detachedDropTarget"
       @activate-tab="$emit('activate-tab', $event)"
       @locate-tab="$emit('locate-tab', $event)"
       @toggle-zen-mode="$emit('toggle-zen-mode')"

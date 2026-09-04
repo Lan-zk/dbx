@@ -353,19 +353,23 @@ async function emitDetachedEvent(event: string, payload: unknown) {
 
 async function isPointOverMainTabBar(position: { x: number; y: number }): Promise<boolean> {
   if (isDetachedWindowContext) return false;
-  const tabBar = document.querySelector<HTMLElement>("[data-main-tab-bar]");
-  if (!tabBar) return false;
+  // In the split workspace every pane's strip (and the special-surfaces bar)
+  // carries the anchor; a point over any of them is a return-to-main drop.
+  const tabBars = Array.from(document.querySelectorAll<HTMLElement>("[data-main-tab-bar]"));
+  if (tabBars.length === 0) return false;
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     const currentWindow = getCurrentWindow();
     const [innerPosition, scaleFactor] = await Promise.all([currentWindow.innerPosition(), currentWindow.scaleFactor()]);
-    const rect = tabBar.getBoundingClientRect();
     const safeScale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
-    const left = innerPosition.x + rect.left * safeScale;
-    const top = innerPosition.y + rect.top * safeScale;
-    const right = innerPosition.x + rect.right * safeScale;
-    const bottom = innerPosition.y + rect.bottom * safeScale;
-    return position.x >= left && position.x <= right && position.y >= top && position.y <= bottom;
+    return tabBars.some((tabBar) => {
+      const rect = tabBar.getBoundingClientRect();
+      const left = innerPosition.x + rect.left * safeScale;
+      const top = innerPosition.y + rect.top * safeScale;
+      const right = innerPosition.x + rect.right * safeScale;
+      const bottom = innerPosition.y + rect.bottom * safeScale;
+      return position.x >= left && position.x <= right && position.y >= top && position.y <= bottom;
+    });
   } catch {
     return false;
   }
@@ -3497,6 +3501,7 @@ onUnmounted(() => {
                     :tab-bar-width="tabBarWidth"
                     :tab-bar-collapsed="tabBarCollapsed"
                     :can-detach-tabs="isDesktop"
+                    :detached-drop-target="detachedDropTargetTabId !== null"
                     @detach-tab="detachTab"
                     :executable-sql="executableSql"
                     :active-output-view="activeOutputView"
