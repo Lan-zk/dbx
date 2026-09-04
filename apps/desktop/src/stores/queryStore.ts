@@ -2350,6 +2350,27 @@ export const useQueryStore = defineStore("query", () => {
     await api.saveDetachedTabHandoff(tabId, handoff);
   }
 
+  /**
+   * Lands a workspace-adopted tab in the pane layout. The split workspace
+   * renders from group membership, so a tab arriving through a detached
+   * handoff must belong to a group to be visible at all. A group that still
+   * carries the id (a return to a pane that never cleaned up) just gets its
+   * active tab repaired; everything else adopts into the first group. Used by
+   * detached-window open, return-to-main, and startup recovery alike.
+   */
+  function ensureTabInWorkspace(tabId: string) {
+    const owner = groups.value.find((group) => group.tabIds.includes(tabId));
+    if (owner) {
+      owner.activeTabId = tabId;
+      focusedGroupId.value = owner.id;
+      return;
+    }
+    const main = groups.value[0];
+    main.tabIds.push(tabId);
+    main.activeTabId = tabId;
+    focusedGroupId.value = main.id;
+  }
+
   async function adoptDetachedTab(handoff: DetachedTabHandoff): Promise<string> {
     if (!handoff || handoff.schemaVersion !== 1 || !handoff.tab || typeof handoff.tab.id !== "string" || handoff.tab.id !== handoff.tabId) throw new Error("Unsupported detached tab state");
     const restored = restoreOpenTabsPayload({ tabs: [handoff.tab], activeTabId: handoff.tabId });
@@ -2367,6 +2388,7 @@ export const useQueryStore = defineStore("query", () => {
     } else {
       tabs.value.push(restoredTab);
     }
+    ensureTabInWorkspace(handoff.tabId);
     activeTabId.value = handoff.tabId;
     return handoff.tabId;
   }
@@ -2374,8 +2396,13 @@ export const useQueryStore = defineStore("query", () => {
   function removeTabAfterDetachedReady(tabId: string): boolean {
     const index = tabs.value.findIndex((tab) => tab.id === tabId);
     if (index < 0) return false;
+    // Group-aware removal: the split workspace renders from group membership,
+    // so the tab must leave its pane too. The emptied pane is pruned exactly
+    // like a bulk close, and a dangling pane (group entry without a tab) is
+    // never left behind for the return trip to trip over.
     tabs.value.splice(index, 1);
-    if (activeTabId.value === tabId) activeTabId.value = tabs.value[Math.min(index, tabs.value.length - 1)]?.id ?? null;
+    removeTabsFromGroups(new Set([tabId]));
+    if (activeTabId.value === tabId) syncActiveTabFromFocusedGroup();
     return true;
   }
 
