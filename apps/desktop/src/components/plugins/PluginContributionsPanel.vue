@@ -1068,6 +1068,11 @@ onBeforeUnmount(() => {
                     <BadgeCheck v-if="listingRepositoryCanVerify(listing.repository)" class="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" :title="t('pluginPlatform.verified')" :aria-label="t('pluginPlatform.verified')" />
                     <span class="truncate">{{ listing.plugin.publisher }} · {{ listing.repository.name }}</span>
                   </div>
+                  <!-- 发布信息行（紧凑档专属）：日期+版本降为身份块的第三行纯文本，与标签行的
+                       内容/风险元数据分类；纯文本而非徽标，形态本身完成信息类别区分 -->
+                  <div class="mt-0.5 hidden truncate text-[10px] leading-3.5 text-muted-foreground @max-[21rem]:block">
+                    v{{ listing.plugin.latestVersion }}<span v-if="listing.latestVersionReleasedAt"> · {{ formatMarketplaceReleasedDate(listing.latestVersionReleasedAt, appLocale) }}</span>
+                  </div>
                 </div>
                 <div class="flex shrink-0 items-center gap-1.5 @max-[21rem]:gap-0.5">
                   <span class="inline-flex items-center gap-1">
@@ -1093,7 +1098,7 @@ onBeforeUnmount(() => {
                     </button>
                   </span>
                   <!-- 头部元数据芯片（日期+版本）：标准档显示在这里；紧凑档（卡宽 <21rem）隐藏，
-                       由标签行内的镜像芯片接管 —— 纯 CSS 无法跨容器移动元素，双份渲染按档位二选一 -->
+                       由标题块下方的发布信息行接管 —— 纯 CSS 无法跨容器移动元素，双份渲染按档位二选一 -->
                   <span v-if="listing.latestVersionReleasedAt" class="hidden shrink-0 items-center gap-1 @min-[21rem]:flex">
                     <span class="shrink-0 text-[10px] text-muted-foreground">{{ formatMarketplaceReleasedDate(listing.latestVersionReleasedAt, appLocale) }}</span>
                     <Badge variant="outline" class="h-5 shrink-0 px-1.5 text-[10px]">v{{ listing.plugin.latestVersion }}</Badge>
@@ -1128,11 +1133,6 @@ onBeforeUnmount(() => {
                 >
                   {{ expandedTagKeys.has(listing.key) ? t("pluginPlatform.showFewerTags") : `+${listing.plugin.tags.length - 1}` }}
                 </button>
-                <!-- 紧凑档镜像芯片：日期+版本并入标签行，与头部芯片内容一致、按档位二选一显示 -->
-                <span class="hidden shrink-0 items-center gap-1.5 @max-[21rem]:inline-flex">
-                  <span v-if="listing.latestVersionReleasedAt" class="shrink-0 text-[10px] text-muted-foreground">{{ formatMarketplaceReleasedDate(listing.latestVersionReleasedAt, appLocale) }}</span>
-                  <Badge variant="outline" class="h-5 shrink-0 px-1.5 text-[10px]">v{{ listing.plugin.latestVersion }}</Badge>
-                </span>
                 <!-- Keep each permission visible as its own wrapping badge. Sensitive permissions
                      use the destructive variant so the risk surface remains obvious. -->
                 <Tooltip v-for="permission in listing.plugin.permissions" :key="permission" :delay-duration="300">
