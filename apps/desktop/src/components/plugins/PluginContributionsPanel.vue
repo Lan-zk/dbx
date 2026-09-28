@@ -1131,7 +1131,7 @@ onBeforeUnmount(() => {
                   :aria-expanded="expandedTagKeys.has(listing.key)"
                   @click.stop="toggleTagExpansion(listing.key)"
                 >
-                  {{ expandedTagKeys.has(listing.key) ? t("pluginPlatform.showFewerTags") : `+${listing.plugin.tags.length - 1}` }}
+                  {{ expandedTagKeys.has(listing.key) ? t("pluginPlatform.showFewerTags") : `+${Math.min(listing.plugin.tags.length - 1, 2)}` }}
                 </button>
                 <!-- Keep each permission visible as its own wrapping badge. Sensitive permissions
                      use the destructive variant so the risk surface remains obvious. -->
