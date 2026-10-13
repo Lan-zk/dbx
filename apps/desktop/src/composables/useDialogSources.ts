@@ -6,7 +6,22 @@ import { useToast } from "@/composables/useToast";
 import { rememberExportPassphrase } from "@/lib/backend/exportPassphraseSession";
 import { hasSidebarLayoutEntries } from "@/lib/sidebar/sidebarLayout";
 import type { ConnectionConfigBundle } from "@/lib/connection/connectionConfigTransfer";
-import type { ConnectionConfig, DataCompareTabState, DataDictionaryTabState, DataGenerateTabState, DatabaseDocsTabState, DatabaseExportTabState, DatabaseType, FieldLineageTabState, MongoDumpTabState, MongoImportTabState, SchemaDiagramTabState, SchemaDiffTabState, SidebarLayout, TransferTabState } from "@/types/database";
+import type {
+  ConnectionConfig,
+  DataCompareTabState,
+  DataDictionaryTabState,
+  DataGenerateTabState,
+  DatabaseDocsTabState,
+  DatabaseExportTabState,
+  DatabaseType,
+  FieldLineageTabState,
+  MongoDumpTabState,
+  MongoImportTabState,
+  SchemaDiagramTabState,
+  SchemaDiffTabState,
+  SidebarLayout,
+  TransferTabState,
+} from "@/types/database";
 
 const showTransferDialog = ref(false);
 const transferTaskId = ref<string | null>(null);
