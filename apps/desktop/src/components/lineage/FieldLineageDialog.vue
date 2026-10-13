@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Dialog, DialogHeader, DialogScrollContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogScrollContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import FieldLineagePanel from "@/components/lineage/FieldLineagePanel.vue";
 import { ExternalLink, Link } from "@lucide/vue";
 import { useQueryStore } from "@/stores/queryStore";
-import type { FieldLineageTabState } from "@/types/database";
+import type { DatabaseType, FieldLineageTabState } from "@/types/database";
 
 const { t } = useI18n();
 const open = defineModel<boolean>("open", { default: false });
@@ -17,6 +17,7 @@ const props = defineProps<{
   prefillSchema?: string;
   prefillTable: string;
   prefillColumn: string;
+  prefillDatabaseType?: DatabaseType;
   initialState?: FieldLineageTabState;
 }>();
 
@@ -65,6 +66,7 @@ function handleOpenInTab() {
         :prefill-schema="props.prefillSchema"
         :prefill-table="props.prefillTable"
         :prefill-column="props.prefillColumn"
+        :prefill-database-type="props.prefillDatabaseType"
         :initial-state="props.initialState"
         @update:initial-state="(state) => emit('update:initial-state', state)"
         @open-target="(value) => emit('open-target', value)"

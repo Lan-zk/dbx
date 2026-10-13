@@ -6,8 +6,7 @@ import { useToast } from "@/composables/useToast";
 import { rememberExportPassphrase } from "@/lib/backend/exportPassphraseSession";
 import { hasSidebarLayoutEntries } from "@/lib/sidebar/sidebarLayout";
 import type { ConnectionConfigBundle } from "@/lib/connection/connectionConfigTransfer";
-import type { DataCompareTabState, DataDictionaryTabState, DataGenerateTabState, DatabaseDocsTabState, DatabaseExportTabState, FieldLineageTabState, MongoDumpTabState, MongoImportTabState, SchemaDiagramTabState, SchemaDiffTabState, TransferTabState } from "@/types/database";
-import type { ConnectionConfig, SidebarLayout } from "@/types/database";
+import type { ConnectionConfig, DataCompareTabState, DataDictionaryTabState, DataGenerateTabState, DatabaseDocsTabState, DatabaseExportTabState, DatabaseType, FieldLineageTabState, MongoDumpTabState, MongoImportTabState, SchemaDiagramTabState, SchemaDiffTabState, SidebarLayout, TransferTabState } from "@/types/database";
 
 const showTransferDialog = ref(false);
 const transferTaskId = ref<string | null>(null);
@@ -29,6 +28,10 @@ const mongoDatabaseDumpPrefillDatabase = ref("");
 const mongoDatabaseDumpMode = ref<"dump" | "restore">("dump");
 /** Snapshot injected by a converted mongo-dump tab; consumed once the dialog restores it. */
 const mongoDumpInitialState = ref<MongoDumpTabState>();
+const showDamengDumpDialog = ref(false);
+const damengDumpPrefillConnectionId = ref("");
+const damengDumpPrefillDatabase = ref("");
+const damengDumpMode = ref<"export" | "import">("export");
 const showTableDataGenerateDialog = ref(false);
 const tableDataGenerateSessionId = ref<string | null>(null);
 const showFieldLineageDialog = ref(false);
@@ -117,6 +120,7 @@ const tableDataGeneratePrefillTable = ref("");
 /** Snapshot injected by a converted data-generate tab; consumed once the dialog restores it. */
 const tableDataGenerateInitialState = ref<DataGenerateTabState>();
 const lineagePrefillConnectionId = ref("");
+const lineagePrefillDatabaseType = ref<DatabaseType>();
 const lineagePrefillDatabase = ref("");
 const lineagePrefillSchema = ref("");
 const lineagePrefillTable = ref("");
@@ -161,6 +165,7 @@ export function openFieldLineageDialogWithState(state: FieldLineageTabState): vo
   lineagePrefillSchema.value = "";
   lineagePrefillTable.value = "";
   lineagePrefillColumn.value = "";
+  lineagePrefillDatabaseType.value = undefined;
   showFieldLineageDialog.value = true;
 }
 
@@ -559,6 +564,18 @@ export function useDialogSources() {
     );
 
     watch(
+      () => connectionStore.damengDumpSource,
+      (source) => {
+        if (!source) return;
+        damengDumpPrefillConnectionId.value = source.connectionId;
+        damengDumpPrefillDatabase.value = source.database;
+        damengDumpMode.value = source.mode;
+        showDamengDumpDialog.value = true;
+        connectionStore.damengDumpSource = null;
+      },
+    );
+
+    watch(
       () => connectionStore.tableDataGenerateSource,
       (v) => {
         if (v) {
@@ -647,6 +664,7 @@ export function useDialogSources() {
       (v) => {
         if (v) {
           lineagePrefillConnectionId.value = v.connectionId;
+          lineagePrefillDatabaseType.value = v.databaseType;
           lineagePrefillDatabase.value = v.database;
           lineagePrefillSchema.value = v.schema ?? "";
           lineagePrefillTable.value = v.tableName;
@@ -899,6 +917,10 @@ export function useDialogSources() {
     mongoDumpInitialState,
     mongoDatabaseDumpPrefillDatabase,
     mongoDatabaseDumpMode,
+    showDamengDumpDialog,
+    damengDumpPrefillConnectionId,
+    damengDumpPrefillDatabase,
+    damengDumpMode,
     showTableDataGenerateDialog,
     tableDataGenerateSessionId,
     tableDataGenerateInitialState,
@@ -974,6 +996,7 @@ export function useDialogSources() {
     tableDataGeneratePrefillSchema,
     tableDataGeneratePrefillTable,
     lineagePrefillConnectionId,
+    lineagePrefillDatabaseType,
     lineagePrefillDatabase,
     lineagePrefillSchema,
     lineagePrefillTable,

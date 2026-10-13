@@ -88,7 +88,7 @@ import { OBJECT_BROWSER_SEARCH_FOCUS_EVENT, objectBrowserSearchFocusTabId } from
 import { parseRecentConnectionIds, rankRecentConnections, RECENT_CONNECTION_IDS_STORAGE_KEY, recordRecentConnection } from "@/lib/connection/recentConnections";
 import { resolveDefaultDatabase } from "@/lib/database/defaultDatabase";
 import { normalizeSqliteNamespace } from "@/lib/database/sqliteNamespace";
-import { findTreeNodeById, resolveNewQueryTarget, resolveNewQueryInitialSql } from "@/lib/sql/newQueryContext";
+import { findTreeNodeById, resolveNewQueryTarget, resolveNewQueryInitialSql, type NewQueryContextSource } from "@/lib/sql/newQueryContext";
 import { isSqlObjectNavigationRoutineType, normalizeOracleNavigationTarget, sqlObjectNavigationSourceKind, sqlObjectNavigationSourceName, sqlObjectNavigationSourceSchema, sqlObjectNavigationTableType, type SqlObjectNavigationTarget } from "@/lib/sql/sqlNavigation";
 import { buildEditableObjectSource, buildExecutableObjectSourceStatements, executeObjectSourceSave } from "@/lib/table/objectSourceEditor";
 import { loadEditableObjectSourceForEditor } from "@/lib/table/objectSourceLoad";
@@ -117,9 +117,12 @@ import { restoreGlobalNavigationEntry } from "@/lib/navigation/globalNavigationE
 import {
   isBrowserReloadShortcut,
   isBrowserTaskManagerShortcut,
+  isCaretBrowsingShortcut,
+  shouldBlockCaretBrowsing,
   isCloseAllTabsShortcut,
   isCloseOtherTabsShortcut,
   isCloseTabShortcut,
+  isReopenClosedTabShortcut,
   isCloseWindowShortcut,
   isDisconnectAllActiveConnectionsShortcut,
   isEditTableStructureShortcut,
@@ -486,6 +489,8 @@ const cursorPos = ref(0);
 const previewChangesAvailable = ref(false);
 const formatSqlRequest = ref<{ id: number; tabId: string } | null>(null);
 const compressSqlRequest = ref<{ id: number; tabId: string } | null>(null);
+/** Toolbar `a`/`A`: keyword-only re-case for the acting editor (issue #11828). */
+const keywordCaseRequest = ref<{ id: number; tabId: string; mode: "upper" | "lower" } | null>(null);
 const activeOutputView = computed<TabOutputView>({
   get: () => activeTab.value?.uiState?.activeOutputView ?? "result",
   set: (view) => {
@@ -1112,8 +1117,9 @@ provide(GROUP_TAB_BAR_PORTAL, createGroupTabBarPortal(isSpecialPageActive));
 provide(EDITOR_TOOLBAR_ACTIONS, {
   canNewQuery: canCreateNewQuery,
   newQuery: (groupId: string) => {
+    lastFocusedSidebarSurface.value = false;
     queryStore.focusGroup(groupId);
-    void newQuery();
+    void newQuery({ preferredSource: "tab" });
   },
   explainMode,
   blockDangerousRedisCommands,
@@ -1305,6 +1311,7 @@ function activateMainContentSurface(surface: MainContentSurface) {
   settingsStore.settingsPageActive = surface === "settings";
   driverStoreActive.value = surface === "driverStore";
   pluginCenterActive.value = surface === "pluginCenter";
+  lastFocusedSidebarSurface.value = false;
 }
 
 watch(
@@ -2143,14 +2150,30 @@ function compressActiveSql(tabId?: string) {
   };
 }
 
-function toggleSqlKeywordCase() {
+function toggleSqlKeywordCase(tabId: string) {
   const sqlFormatter = settingsStore.editorSettings.sqlFormatter;
+  const keywordCase = sqlFormatter.keywordCase === "lower" ? "upper" : "lower";
+  // Clicking the button and formatting must agree, so the preference flips and
+  // the editor re-cases the current document (or selection) to match — the
+  // button is labeled "使用大写/小写 SQL 关键字", and issue #11828 reported it as
+  // doing nothing because only the preference moved.
   settingsStore.updateEditorSettings({
     sqlFormatter: {
       ...sqlFormatter,
-      keywordCase: sqlFormatter.keywordCase === "lower" ? "upper" : "lower",
+      keywordCase,
     },
   });
+
+  const tab = resolveToolbarTab(tabId);
+  if (!tab || tab.mode !== "query") return;
+  const connection = connectionStore.getConfig(tab.connectionId);
+  const databaseType = effectiveDatabaseTypeForConnection(connection) ?? connection?.db_type;
+  if (!canFormatSqlForDatabaseType(databaseType)) return;
+  keywordCaseRequest.value = {
+    id: (keywordCaseRequest.value?.id ?? 0) + 1,
+    tabId: tab.id,
+    mode: keywordCase,
+  };
 }
 
 function defaultSavedSqlName(title: string) {
@@ -3092,7 +3115,11 @@ function openConnectionSettings(connectionId: string, initialTab: ConfigTab = "c
   showConnectionDialog.value = true;
 }
 
-async function newQuery() {
+interface NewQueryOptions {
+  preferredSource?: NewQueryContextSource;
+}
+
+async function newQuery(options: NewQueryOptions = {}) {
   const sqlConnections = connectionStore.connections.filter((connection) => quickConnectionOpenTarget(connection).kind === "query" && supportsGenericNewQuery(connection));
   const connectedSqlConnectionIds = new Set(sqlConnections.filter((connection) => connectionStore.connectedIds.has(connection.id)).map((connection) => connection.id));
   let target = resolveNewQueryTarget({
@@ -3101,6 +3128,7 @@ async function newQuery() {
     activeConnectionId: connectionStore.activeConnectionId,
     connections: connectionStore.connections,
     connectedSqlConnectionIds,
+    preferredSource: options.preferredSource,
   });
   if (!target) {
     // No active editor/sidebar choice and no unique online SQL connection:
@@ -3157,6 +3185,7 @@ async function newQuery() {
   const initialSql = resolveNewQueryInitialSql({
     activeTab: activeTab.value,
     selectedTreeNode: findTreeNodeById(connectionStore.treeNodes, connectionStore.selectedTreeNodeId),
+    preferredSource: options.preferredSource,
     prefillEnabled: settingsStore.editorSettings.prefillNewQueryWithSelect,
     targetConnectionId: target.connectionId,
     targetDatabase: target.database,
@@ -4122,6 +4151,16 @@ function handleNativeSelectAll(e: KeyboardEvent) {
     e.stopPropagation();
     return;
   }
+  if (
+    shouldBlockCaretBrowsing(e, {
+      caretBrowsingEnabled: settingsStore.editorSettings.caretBrowsingEnabled,
+      shortcuts: settingsStore.editorSettings.shortcuts,
+    })
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
   if (shouldBlockAppNativeSelectAll(e)) e.preventDefault();
 }
 
@@ -4176,6 +4215,10 @@ function rememberAuxiliarySearchSurface(surface: Exclude<AuxiliarySearchSurface,
 
 function rememberSidebarSearchSurface() {
   lastFocusedSidebarSurface.value = true;
+}
+
+function rememberEditorContentSurface() {
+  lastFocusedSidebarSurface.value = false;
 }
 
 function setPluginWorkbenchTabRef(tabId: string, element: unknown) {
@@ -4316,7 +4359,10 @@ async function handleKeydown(e: KeyboardEvent) {
   if (isNewQueryShortcut(e, shortcuts)) {
     e.preventDefault();
     e.stopPropagation();
-    void newQuery();
+    const target = e.target instanceof Element ? e.target : null;
+    const targetIsDocument = !target || target === document.body || target === document.documentElement;
+    const sidebarFocused = target?.closest("[data-app-sidebar]") || (targetIsDocument && lastFocusedSidebarSurface.value);
+    void newQuery({ preferredSource: sidebarFocused ? "sidebar" : undefined });
     return;
   }
   if (isToggleSidebarShortcut(e, shortcuts)) {
@@ -4392,6 +4438,12 @@ async function handleKeydown(e: KeyboardEvent) {
     await closeActiveSurface();
     return;
   }
+  if (isReopenClosedTabShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    queryStore.reopenClosedTab();
+    return;
+  }
   if (isSaveShortcut(e, shortcuts) && e.target instanceof Element && isObjectSourceSaveShortcutTarget(e.target)) {
     return;
   }
@@ -4452,6 +4504,11 @@ async function handleKeydown(e: KeyboardEvent) {
     }
   }
   if (isBrowserTaskManagerShortcut(e)) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  if (!settingsStore.editorSettings.caretBrowsingEnabled && isCaretBrowsingShortcut(e)) {
     e.preventDefault();
     e.stopPropagation();
     return;
@@ -4886,6 +4943,7 @@ onUnmounted(() => {
             data-editor-content
             v-show="isSpecialPageActive || (!isAiPanelMaximized && !isHistoryPanelMaximized) || isZenMode"
             :class="isDetachedWindowContext ? 'flex-1 min-w-0 overflow-hidden bg-background' : isClassicLayout ? 'flex-1 min-w-0 overflow-hidden' : 'flex-1 min-w-0 overflow-hidden rounded-md border border-border/80 bg-background'"
+            @mousedown="rememberEditorContentSurface"
           >
             <div class="h-full flex min-h-0 min-w-0 flex-col">
               <AppTabBar
@@ -5022,6 +5080,7 @@ onUnmounted(() => {
                     :active-output-view="activeOutputView"
                     :format-sql-request="formatSqlRequest"
                     :compress-sql-request="compressSqlRequest"
+                    :keyword-case-request="keywordCaseRequest"
                     :selected-sql="selectedSql"
                     :cursor-pos="cursorPos"
                     :block-dangerous-redis-commands="blockDangerousRedisCommands"

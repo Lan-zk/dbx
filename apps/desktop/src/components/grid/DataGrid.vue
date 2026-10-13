@@ -115,7 +115,7 @@ import { createColumnDrafts } from "@/lib/table/tableStructureEditorState";
 import type { BuildSingleColumnAlterSqlOptions } from "@/lib/table/tableStructureEditorSql";
 import { buildTableSelectSql, qualifyTableReferencesInSql, quoteTableDataIdentifier } from "@/lib/table/tableSelectSql";
 import { uuid } from "@/lib/common/utils";
-import { generateCellValues, type CellValueGenerationKind } from "@/lib/dataGrid/cellValueGeneration";
+import { generateCellValues, type CellValueGenerationKind, type CellValueGenerationOptions } from "@/lib/dataGrid/cellValueGeneration";
 import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridClipboardText, mongoDocumentGridDisplayText, mongoDocumentGridEditorText, mongoDocumentGridExternalValue, mongoDocumentGridInputValue, mongoDocumentGridNumericValue, mongoDocumentRelaxedExtendedJson } from "@/lib/mongo/mongoDocumentValues";
 import { compactHeaderColumnType, formatMetadataColumnTypeLabel, isNumericColumnType, resolveDataGridTypeVisualKind, resolveHeaderColumnType, resolveResultColumnType } from "@/lib/dataGrid/dataGridColumnType";
 import { dataGridCellTextClass, dataGridTypeVisualClass } from "@/lib/dataGrid/dataGridCellTextVisual";
@@ -333,11 +333,12 @@ import { translateBackendError } from "@/i18n/backend-errors";
 import { useNavigationTargets } from "@/composables/useNavigationTargets";
 import { useDataGridExport, type MongoCopyUpdateTarget } from "@/composables/useDataGridExport";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
+import { promptExportSavePath } from "@/lib/export/exportPath";
 import { eventTargetAllowsNativeClipboard, isPlainClipboardShortcut, readTextFromClipboard } from "@/lib/common/clipboard";
 import { claimDataGridPaste, claimDataGridSelectAll, clearDataGridClipboardCopy, parseDataGridClipboard, parseDataGridClipboardInBatches, planDataGridPaste } from "@/lib/dataGrid/dataGridClipboard";
 import { parseInsertStatementPaste, parseInsertStatementPasteInBatches } from "@/lib/dataGrid/dataGridInsertPaste";
 import { beginDataGridNativeSelectionBlock, finishDataGridNativeSelectionBlock } from "@/lib/dataGrid/dataGridNativeSelection";
-import { DATA_GRID_COPY_EXTRACTOR_DESCRIPTORS, DATA_GRID_COPY_EXTRACTOR_IDS, DATA_GRID_DEFAULT_COPY_PREFERENCES, extractorUnavailableForDatabase, type DataGridCopyExtractorId, type DataGridCopyPreference } from "@/lib/dataGrid/dataGridCopyExtractor";
+import { DATA_GRID_COPY_EXTRACTOR_DESCRIPTORS, DATA_GRID_COPY_EXTRACTOR_IDS, DATA_GRID_DEFAULT_COPY_PREFERENCES, extractorUnavailableForDatabase, type DataGridCopyExtractorId, type DataGridCopyPreference, type DataGridPrimaryKeyMode } from "@/lib/dataGrid/dataGridCopyExtractor";
 import { columnNamesForCopy } from "@/lib/dataGrid/dataGridColumnNameCopy";
 import { DATA_GRID_ROW_NUM_WIDTH, dataGridRowNumberColumnWidth, resolveDataGridMaxRowNumber, useDataGridColumnResize } from "@/composables/useDataGridColumnResize";
 import { createDataGridColumnStructureSignature } from "@/lib/dataGrid/dataGridColumnWidthState";
@@ -413,7 +414,7 @@ import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useDataGridColumnFormatter } from "@/composables/useDataGridColumnFormatter";
 import { useDataGridTableMetadataLoaders } from "@/composables/useDataGridTableMetadataLoaders";
 import { DATA_GRID_SERVER_COLUMN_FILTER_LIMIT, useDataGridColumnFilters } from "@/composables/useDataGridColumnFilters";
-import { useDataGridLargeValues } from "@/composables/useDataGridLargeValues";
+import { useDataGridLargeValues, type LargeValueSnapshotDownloadTarget } from "@/composables/useDataGridLargeValues";
 import { useDataGridSaveConfirmation } from "@/composables/useDataGridSaveConfirmation";
 
 const SqlPreviewPanel = defineAsyncComponent(() => import("@/components/editor/SqlPreviewPanel.vue"));
@@ -1084,6 +1085,9 @@ const insertRowsDialogOpen = ref(false);
 const insertPosition = ref<GridInsertRowPosition>("below");
 const generateIncrementDialogOpen = ref(false);
 const generateIncrementStartValue = ref("1");
+const generateIncrementPadLength = ref("");
+const generateIncrementPrefix = ref("");
+const generateIncrementSuffix = ref("");
 const generateIncrementTarget = ref<"selection" | "detail">("selection");
 const gridSnapshotOpen = ref(false);
 const gridSnapshotSource = ref<GridSnapshotSource | null>(null);
@@ -1339,6 +1343,7 @@ watch([conditionalBulkEditConditionSource, conditionalBulkEditCurrentWhereInput,
 
 const structuredFilterRules = filterBuilder.rules;
 const filterBuilderOpen = filterBuilder.open;
+const filterWorkbenchRef = ref<{ focusRuleValue: (ruleId: string) => void }>();
 const filterBuilderColumnSearch = filterBuilder.columnSearch;
 const filteredFilterBuilderColumnOptions = filterBuilder.filteredColumns;
 const appliedStructuredWhereInput = filterBuilder.appliedWhereInput;
@@ -4463,6 +4468,9 @@ const editor = useDataGridEditor({
   cacheKey: computed(() => props.pendingStateKey ?? props.cacheKey),
   onResultPayloadMutated: () => queryStore.invalidateResultEstimateForPayload(props.result),
   refreshSavedRows,
+  prepareSaveBaseline: async (changes) => {
+    await largeValueRuntime?.prepareSaveBaseline(changes);
+  },
   onCellValueChanged: (rowId, columnIndex) => largeValueRuntime?.invalidateVisibleLargeValuePreviewCell(rowId, columnIndex),
   prepareFullReload,
   emit,
@@ -7290,6 +7298,24 @@ async function applyContextFilter(mode: FilterMode) {
   }
 }
 
+async function openContextCustomFilter() {
+  if (!canUseWhereSearch.value) return;
+  const target = contextFilterTarget.value;
+  if (!target) return;
+  const rule = filterBuilder.addRule({
+    columnName: target.columnName,
+    rawValue: target.requiresHydration ? "" : formatFilterRawValue(target.sourceValue),
+  });
+  // The quick and text views only expose a raw WHERE string, so a hand-tuned
+  // condition needs the rule builder; select it and open its panel.
+  settingsStore.updateEditorSettings({ dataGridFilterEditorView: "conditions" });
+  await nextTick();
+  filterBuilderOpen.value = true;
+  await nextTick();
+  filterWorkbenchRef.value?.focusRuleValue(rule.id);
+  if (contextFilterTarget.value?.id === target.id) contextFilterTarget.value = null;
+}
+
 async function clearContextFilter() {
   await clearAllFilters();
 }
@@ -8809,6 +8835,7 @@ const {
         },
   ),
   completeLocalResult: computed(() => (hasCompleteLocalResult.value ? props.result : undefined)),
+  snapshotResult: computed(() => props.result),
   allExportResults: computed(() => props.allExportResults),
   currentResultLabel: computed(() => props.result.sourceLabel),
   exportFileBaseName: computed(() => props.exportFileBaseName),
@@ -8846,7 +8873,13 @@ function copyExtractorLabel(extractor: DataGridCopyExtractorId): string {
 function copyPreferenceLabel(preference: DataGridCopyPreference): string {
   if (preference === "smart") return t("grid.copyExtractorSmart");
   if (preference !== "sql-inserts") return copyExtractorLabel(preference);
-  return t(settingsStore.editorSettings.dataGridExtractorOptions.sql.excludePrimaryKeysFromInsert ? "grid.copyExtractorSqlInsertsWithoutPrimaryKeys" : "grid.copyExtractorSqlInsertsWithPrimaryKeys");
+  return sqlInsertModeLabel(settingsStore.editorSettings.dataGridExtractorOptions.sql.primaryKeyMode);
+}
+
+function sqlInsertModeLabel(mode: DataGridPrimaryKeyMode): string {
+  if (mode === "exclude-all") return t("grid.copyExtractorSqlInsertsWithoutAllPrimaryKeys");
+  if (mode === "exclude-generated") return t("grid.copyExtractorSqlInsertsWithoutPrimaryKeys");
+  return t("grid.copyExtractorSqlInsertsWithPrimaryKeys");
 }
 
 const selectedCopyPreference = computed(() => settingsStore.editorSettings.dataGridCopyExtractor);
@@ -8875,11 +8908,11 @@ function setDefaultCopyPreference(value: string) {
   });
 }
 
-function sqlInsertExtractorOptions(excludePrimaryKeysFromInsert: boolean) {
+function sqlInsertExtractorOptions(primaryKeyMode: DataGridPrimaryKeyMode) {
   const options = settingsStore.editorSettings.dataGridExtractorOptions;
   return {
     ...options,
-    sql: { ...options.sql, excludePrimaryKeysFromInsert },
+    sql: { ...options.sql, primaryKeyMode },
   };
 }
 
@@ -9915,11 +9948,12 @@ function beginInlineBulkEdit(initialValue: string): boolean {
   return true;
 }
 
-function applyGeneratedSelectionValue(kind: CellValueGenerationKind, startValue = 1n): boolean {
+function applyGeneratedSelectionValue(kind: CellValueGenerationKind, generationOptions?: CellValueGenerationOptions | bigint): boolean {
   if (!props.editable) return false;
   const cells = editableSelectionCells();
   if (!cells.length) return false;
-  const values = generateCellValues(kind, cells.length, { startValue });
+  const options = typeof generationOptions === "bigint" ? { startValue: generationOptions } : (generationOptions ?? {});
+  const values = generateCellValues(kind, cells.length, options);
   const allowDraftSelectionValue = selectedRangeTargetsOnlyDraftRow();
   let applied = false;
   beginBatch();
@@ -9937,10 +9971,11 @@ function applyGeneratedSelectionValue(kind: CellValueGenerationKind, startValue 
   return applied;
 }
 
-function applyGeneratedDetailValue(kind: CellValueGenerationKind, startValue = 1n): boolean {
+function applyGeneratedDetailValue(kind: CellValueGenerationKind, generationOptions?: CellValueGenerationOptions | bigint): boolean {
   const detail = activeCellDetail.value;
   if (!detail?.isEditable) return false;
-  const value = generatedGridValue(kind, generateCellValues(kind, 1, { startValue })[0] ?? null);
+  const options = typeof generationOptions === "bigint" ? { startValue: generationOptions } : (generationOptions ?? {});
+  const value = generatedGridValue(kind, generateCellValues(kind, 1, options)[0] ?? null);
   applyCellValue(detail.rowId, detail.colIndex, value, {
     preserveEmptyString: kind === "empty",
   });
@@ -9963,8 +9998,41 @@ function openGenerateIncrementDialog(target: "selection" | "detail") {
   if (target === "detail" && !activeCellDetail.value?.isEditable) return;
   generateIncrementTarget.value = target;
   generateIncrementStartValue.value = "1";
+  generateIncrementPadLength.value = "";
+  generateIncrementPrefix.value = "";
+  generateIncrementSuffix.value = "";
   generateIncrementDialogOpen.value = true;
 }
+
+const generateIncrementPreview = computed(() => {
+  try {
+    const rawStart = generateIncrementStartValue.value.trim();
+    const startValue = BigInt(rawStart || "1");
+    let padLength: number | undefined;
+    const trimmedPad = generateIncrementPadLength.value.trim();
+    if (trimmedPad) {
+      const parsed = Number(trimmedPad);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 64) {
+        return "";
+      }
+      padLength = parsed;
+    }
+    const totalCount = generateIncrementTarget.value === "detail" ? 1 : editableSelectionCells().length;
+    const count = Math.min(Math.max(1, totalCount), 3);
+    const values = generateCellValues("increment", count, {
+      startValue,
+      padLength,
+      prefix: generateIncrementPrefix.value,
+      suffix: generateIncrementSuffix.value,
+    });
+    if (totalCount > 3) {
+      return `${values.slice(0, 2).join(", ")}, … (${totalCount})`;
+    }
+    return values.join(", ");
+  } catch {
+    return "";
+  }
+});
 
 function applyGenerateIncrementValue() {
   let startValue: bigint;
@@ -9974,7 +10042,23 @@ function applyGenerateIncrementValue() {
     toast(t("grid.generateStartInvalid"));
     return;
   }
-  const applied = generateIncrementTarget.value === "detail" ? applyGeneratedDetailValue("increment", startValue) : applyGeneratedSelectionValue("increment", startValue);
+  let padLength: number | undefined;
+  const trimmedPad = generateIncrementPadLength.value.trim();
+  if (trimmedPad) {
+    const parsed = Number(trimmedPad);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 64) {
+      toast(t("grid.generatePadLengthInvalid"));
+      return;
+    }
+    padLength = parsed;
+  }
+  const options: CellValueGenerationOptions = {
+    startValue,
+    padLength,
+    prefix: generateIncrementPrefix.value,
+    suffix: generateIncrementSuffix.value,
+  };
+  const applied = generateIncrementTarget.value === "detail" ? applyGeneratedDetailValue("increment", options) : applyGeneratedSelectionValue("increment", options);
   if (applied) generateIncrementDialogOpen.value = false;
 }
 
@@ -10761,10 +10845,23 @@ function downloadCellBinaryValue(rowIndex: number, columnIndex: number, mode: Bi
   void downloadDetailBinaryValue(cellDetailFor(rowIndex, columnIndex), mode);
 }
 
-async function downloadDetailBinaryValue(detail: DataGridCellDetail | null, mode: BinaryCellDownloadMode) {
+async function downloadDetailBinaryValue(detail: DataGridCellDetail | null, mode: BinaryCellDownloadMode, snapshotTarget?: LargeValueSnapshotDownloadTarget) {
+  if (snapshotTarget && !largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(snapshotTarget)) return;
   if (!detail || !canDownloadDetailBinaryValue(detail)) return;
   try {
     const sourceResult = props.result;
+    if (snapshotTarget || largeValueRuntimeInstance.snapshotReference(getRowItem(detail.rowId), detail.colIndex)) {
+      const target = snapshotTarget ?? largeValueRuntimeInstance.captureSnapshotDownloadTarget(detail.rowId, detail.colIndex);
+      if (!target) throw new Error("LOB snapshot is unavailable");
+      if (!largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(target)) return;
+      const extension = mode === "binary" ? binaryCellDownloadPayload(detail.value, mode, detail.type, resolvedDatabaseType.value).extension : "txt";
+      const fileName = binaryCellDownloadFileName({ column: detail.column, rowNumber: detail.rowNumber, mode, extension });
+      const path = isTauriRuntime() ? await promptExportSavePath({ defaultFileName: fileName, filters: [{ name: "LOB", extensions: [extension] }] }) : fileName;
+      if (!path || !largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(target)) return;
+      await largeValueRuntimeInstance.downloadSnapshotTarget(target, path, mode);
+      toast(isTauriRuntime() ? t("grid.downloadSaved", { path }) : t("grid.downloadStarted", { fileName }));
+      return;
+    }
     if (!(await hydrateLargeValueCell(detail.rowId, detail.colIndex))) return;
     if (props.result !== sourceResult) return;
     const resolvedDetail = cellDetailFor(displayRowIndexById(detail.rowId), detail.colIndex);
@@ -10788,6 +10885,26 @@ async function downloadDetailBinaryValue(detail: DataGridCellDetail | null, mode
 }
 
 function binaryDownloadSubmenu(detail: DataGridCellDetail | null): ContextMenuItem | null {
+  const sourceResult = props.result;
+  const snapshotTarget = detail ? largeValueRuntimeInstance.captureSnapshotDownloadTarget(detail.rowId, detail.colIndex) : undefined;
+  if (detail && largeValueRuntimeInstance.snapshotReference(getRowItem(detail.rowId), detail.colIndex) && !isBinaryCellColumnType(detail.type)) {
+    return {
+      label: t("grid.downloadSnapshotValue"),
+      icon: Download,
+      action: async () => {
+        if (!snapshotTarget || !largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(snapshotTarget)) return;
+        const defaultFileName = `lob-row-${detail.rowNumber}.txt`;
+        const path = isTauriRuntime() ? await promptExportSavePath({ defaultFileName, filters: [{ name: "Text", extensions: ["txt"] }] }) : defaultFileName;
+        if (!path || !largeValueRuntimeInstance.isSnapshotDownloadTargetCurrent(snapshotTarget)) return;
+        try {
+          await largeValueRuntimeInstance.downloadSnapshotTarget(snapshotTarget, path);
+          toast(isTauriRuntime() ? t("grid.downloadSaved", { path }) : t("grid.downloadStarted", { fileName: defaultFileName }));
+        } catch (error) {
+          reportLargeValueLoadError(error);
+        }
+      },
+    };
+  }
   if (!canDownloadDetailBinaryValue(detail)) return null;
   return {
     label: t("grid.downloadBinaryValue"),
@@ -10795,7 +10912,8 @@ function binaryDownloadSubmenu(detail: DataGridCellDetail | null): ContextMenuIt
     children: BINARY_CELL_DOWNLOAD_MODES.map((mode) => ({
       label: t(`grid.binaryDownload.${mode}`),
       action: () => {
-        void downloadDetailBinaryValue(detail, mode);
+        if (props.result !== sourceResult) return;
+        return downloadDetailBinaryValue(detail, mode, snapshotTarget);
       },
     })),
   };
@@ -13120,11 +13238,13 @@ function filterSubmenu(): ContextMenuItem {
       notLike: t("grid.filterNotLike"),
       lessThan: t("grid.filterLessThan"),
       greaterThan: t("grid.filterGreaterThan"),
+      custom: t("grid.filterCustom"),
       isNull: t("grid.filterIsNull"),
       isNotNull: t("grid.filterIsNotNull"),
       clear: t("grid.clearFilter"),
     },
     apply: applyContextFilter,
+    applyCustom: openContextCustomFilter,
     clear: clearContextFilter,
   });
 }
@@ -13241,11 +13361,11 @@ function buildExtractorContextItems(destination: "copy" | "export" = "copy"): Co
     const selected = extractor === selectedCopyPreference.value;
     const extractorItems: ContextMenuItem[] = [];
     if (extractor === "sql-inserts") {
-      for (const excludePrimaryKeysFromInsert of [false, true]) {
-        if (destination === "copy" && selected && settingsStore.editorSettings.dataGridExtractorOptions.sql.excludePrimaryKeysFromInsert === excludePrimaryKeysFromInsert) continue;
-        const options = sqlInsertExtractorOptions(excludePrimaryKeysFromInsert);
+      for (const primaryKeyMode of ["include", "exclude-generated", "exclude-all"] as const) {
+        if (destination === "copy" && selected && settingsStore.editorSettings.dataGridExtractorOptions.sql.primaryKeyMode === primaryKeyMode) continue;
+        const options = sqlInsertExtractorOptions(primaryKeyMode);
         extractorItems.push({
-          label: t(excludePrimaryKeysFromInsert ? "grid.copyExtractorSqlInsertsWithoutPrimaryKeys" : "grid.copyExtractorSqlInsertsWithPrimaryKeys"),
+          label: sqlInsertModeLabel(primaryKeyMode),
           action: () => void (destination === "copy" ? copyWithExtractor(extractor, options) : exportWithExtractor(extractor, options)),
           disabled: !canCopyWithExtractor(extractor, options),
         });
@@ -13273,7 +13393,7 @@ function buildExtractorContextItems(destination: "copy" | "export" = "copy"): Co
 
 function defaultCopyPreferenceContextItem(): ContextMenuItem {
   const preference = selectedCopyPreference.value;
-  const extractorOptions = preference === "sql-inserts" ? sqlInsertExtractorOptions(settingsStore.editorSettings.dataGridExtractorOptions.sql.excludePrimaryKeysFromInsert) : undefined;
+  const extractorOptions = preference === "sql-inserts" ? sqlInsertExtractorOptions(settingsStore.editorSettings.dataGridExtractorOptions.sql.primaryKeyMode) : undefined;
   const disabled = preference === "smart" ? !canCopyWithExtractor("raw", extractorOptions) && !canCopyWithExtractor("tsv", extractorOptions) : !canCopyWithExtractor(preference, extractorOptions);
   return {
     label: defaultCopyPreferenceLabel.value,
@@ -13690,7 +13810,14 @@ function openGridSnapshot() {
       return type ? shortTypeName(compactHeaderColumnType(type)) : undefined;
     }),
     columnDetails: columnIndexes.map((index) => visibleColumnComments.value[index]),
-    rows: selection.rows.map((row) => row.slice()),
+    rows: selection.rows.map((row) =>
+      row.map((val, cellIdx) => {
+        if (val === null || val === undefined) return null;
+        const visibleColIdx = columnIndexes[cellIdx];
+        const actualColIdx = visibleColIdx !== undefined ? visibleColumnIndexes.value[visibleColIdx] : undefined;
+        return formatCellCached(val, actualColIdx);
+      }),
+    ),
     title: props.exportFileBaseName || props.result.sourceLabel || undefined,
   };
   gridSnapshotOpen.value = true;
@@ -13898,6 +14025,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         </div>
         <DataGridFilterWorkbench
           v-if="canUseWhereSearch && filterEditorView === 'conditions' && filterBuilderOpen"
+          ref="filterWorkbenchRef"
           :sql-preview="filterSqlPreview"
           :rules="structuredFilterRules"
           :columns="filterBuilderColumnOptions"
@@ -15879,11 +16007,11 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
     </Dialog>
 
     <Dialog v-model:open="generateIncrementDialogOpen">
-      <DialogContent class="sm:max-w-[380px]">
+      <DialogContent class="sm:max-w-[420px]">
         <DialogHeader>
           <DialogTitle>{{ t("grid.generateIncrementId") }}</DialogTitle>
         </DialogHeader>
-        <div class="space-y-2">
+        <div class="space-y-3">
           <p class="text-sm text-muted-foreground">
             {{
               t("grid.generateSequenceDescription", {
@@ -15891,7 +16019,28 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
               })
             }}
           </p>
-          <Input v-model="generateIncrementStartValue" inputmode="numeric" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="1" @keydown.enter.prevent="applyGenerateIncrementValue" />
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-foreground">{{ t("grid.generateStartValue") }}</label>
+            <Input v-model="generateIncrementStartValue" inputmode="numeric" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="1" @keydown.enter.prevent="applyGenerateIncrementValue" />
+          </div>
+          <div class="space-y-1.5">
+            <label class="text-xs font-medium text-foreground">{{ t("grid.generatePadLength") }}</label>
+            <Input v-model="generateIncrementPadLength" inputmode="numeric" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" :placeholder="t('grid.generatePadLengthPlaceholder')" @keydown.enter.prevent="applyGenerateIncrementValue" />
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-foreground">{{ t("grid.generatePrefix") }}</label>
+              <Input v-model="generateIncrementPrefix" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" :placeholder="t('grid.generatePrefixPlaceholder')" @keydown.enter.prevent="applyGenerateIncrementValue" />
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-xs font-medium text-foreground">{{ t("grid.generateSuffix") }}</label>
+              <Input v-model="generateIncrementSuffix" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" :placeholder="t('grid.generateSuffixPlaceholder')" @keydown.enter.prevent="applyGenerateIncrementValue" />
+            </div>
+          </div>
+          <div v-if="generateIncrementPreview" class="rounded-md border bg-muted/50 p-2.5 text-xs">
+            <span class="font-medium text-muted-foreground">{{ t("grid.generatePreview") }}: </span>
+            <span class="font-mono select-all">{{ generateIncrementPreview }}</span>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" @click="generateIncrementDialogOpen = false">{{ t("dangerDialog.cancel") }}</Button>

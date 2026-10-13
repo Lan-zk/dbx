@@ -12,7 +12,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { cancelFieldLineageSession, getFieldLineageSession, startFieldLineageSession, type FieldLineageSessionConfig } from "@/composables/useFieldLineageSession";
 import { summarizeLineageCounts, type FieldLineageConfidence, type FieldLineageItem } from "@/lib/diagram/fieldLineage";
 import { copyToClipboard } from "@/lib/common/clipboard";
-import type { FieldLineageTabState } from "@/types/database";
+import type { DatabaseType, FieldLineageTabState } from "@/types/database";
 
 const props = withDefaults(
   defineProps<{
@@ -21,12 +21,13 @@ const props = withDefaults(
     prefillSchema?: string;
     prefillTable?: string;
     prefillColumn?: string;
+    prefillDatabaseType?: DatabaseType;
     /** Dialog form factor: footer actions. Tab form factor: top toolbar + convert action. */
     inDialog?: boolean;
     /** Serialized snapshot a converted tab (or dialog) resumes from. */
     initialState?: FieldLineageTabState;
   }>(),
-  { prefillConnectionId: undefined, prefillDatabase: undefined, prefillSchema: undefined, prefillTable: undefined, prefillColumn: undefined, inDialog: true, initialState: undefined },
+  { prefillConnectionId: undefined, prefillDatabase: undefined, prefillSchema: undefined, prefillTable: undefined, prefillColumn: undefined, prefillDatabaseType: undefined, inDialog: true, initialState: undefined },
 );
 
 const emit = defineEmits<{
@@ -53,7 +54,7 @@ const open = defineModel<boolean>("open", { default: false });
 
 /** The panel works on one config: from the converted snapshot, or from the dialog prefill props. */
 const config = computed<FieldLineageSessionConfig | null>(() => {
-  if (props.initialState) return props.initialState.config;
+  if (props.initialState) return { databaseType: props.prefillDatabaseType, ...props.initialState.config };
   if (!props.prefillConnectionId || !props.prefillDatabase || !props.prefillTable || !props.prefillColumn) return null;
   return {
     connectionId: props.prefillConnectionId,
@@ -61,6 +62,7 @@ const config = computed<FieldLineageSessionConfig | null>(() => {
     schema: props.prefillSchema,
     table: props.prefillTable,
     column: props.prefillColumn,
+    databaseType: props.prefillDatabaseType,
   };
 });
 
@@ -71,6 +73,9 @@ const errorText = computed(() => (session.value?.status === "failed" ? (session.
 const result = computed(() => session.value?.result ?? null);
 const progressDone = computed(() => session.value?.progress?.done ?? 0);
 const progressTotal = computed(() => session.value?.progress?.total ?? 0);
+const isXugu = computed(() => config.value?.databaseType === "xugu");
+const coverage = computed(() => session.value?.coverage ?? null);
+const hasIncompleteCoverage = computed(() => !!coverage.value && Object.values(coverage.value).some((count) => count > 0));
 
 const confidenceFilter = ref<"all" | FieldLineageConfidence>("all");
 const searchText = ref("");
@@ -322,6 +327,19 @@ defineExpose({ getCurrentState });
       </div>
 
       <div class="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+        <div v-if="isXugu" class="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5 text-muted-foreground">
+          {{ t("lineage.xuguScopeNotice", { schema: config?.schema || config?.database || "" }) }}
+        </div>
+        <div v-if="isXugu && hasIncompleteCoverage" class="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
+          {{
+            t("lineage.xuguPartialCoverage", {
+              skippedTables: coverage?.skippedTables ?? 0,
+              skippedViews: coverage?.skippedViews ?? 0,
+              omittedTables: coverage?.omittedTables ?? 0,
+              omittedViews: coverage?.omittedViews ?? 0,
+            })
+          }}
+        </div>
         <div v-if="loading" class="rounded-md border bg-muted/20 p-4">
           <div class="flex items-center gap-2 text-sm text-muted-foreground tabular-nums">
             <Loader2 class="h-4 w-4 animate-spin" />
