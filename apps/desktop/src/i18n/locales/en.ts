@@ -8140,6 +8140,15 @@ export default {
     truncatedHint: "Tables with more rows than a single compare can read were compared only over their first rows, so added, modified, or deleted rows beyond that point are not reported. Narrow the range with a filter and compare in batches.",
     truncatedTable: "{table}: {source} source rows, {target} target rows, compared the first {budget} rows only",
     truncatedBadge: "Compared the first {budget} rows only",
+    openInTab: "Open in Tab",
+    convertToDialog: "Convert to Dialog",
+    transactionActiveHint: "A manual transaction is active. Commit or roll back first.",
+    transactionRolledBackOnClose: "Tab closed; the pending transaction was rolled back",
+  },
+  workspace: {
+    openInTab: "Open in Tab",
+    convertToDialog: "Convert to Dialog",
+    runStateLockedHint: "An operation is still running. Finish or cancel it before converting.",
   },
   settings: {
     historyRetentionLimit: "Query history retention",

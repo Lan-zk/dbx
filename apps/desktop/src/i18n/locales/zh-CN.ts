@@ -8124,6 +8124,15 @@ export default withEnglishFallback({
     truncatedHint: "行数超过单次比较上限的表只比较了前若干行，超出部分的新增、修改和删除不会被发现。建议加上过滤条件缩小范围后分批比较。",
     truncatedTable: "{table}：源 {source} 行、目标 {target} 行，仅比较前 {budget} 行",
     truncatedBadge: "仅比较前 {budget} 行",
+    openInTab: "在标签页中打开",
+    convertToDialog: "转为弹窗",
+    transactionActiveHint: "事务进行中，请先提交或回滚",
+    transactionRolledBackOnClose: "页签已关闭，未提交的事务已回滚",
+  },
+  workspace: {
+    openInTab: "在标签页中打开",
+    convertToDialog: "转为弹窗",
+    runStateLockedHint: "当前操作尚未结束，请先完成或取消后再转换。",
   },
   settings: {
     historyRetentionLimit: "查询历史保留条数",
