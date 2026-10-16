@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import PasswordInput from "@/components/ui/PasswordInput.vue";
 import { Label } from "@/components/ui/label";
+import { sidebarProductionBadgeScope } from "@/lib/sidebar/sidebarProductionBadge";
+import type { ProductionBadgeScope } from "@/types/database";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HelpTooltip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -53,6 +55,7 @@ import { createConnectionNoteVisibilityDraft, persistConnectionNoteVisibilityDra
 import { REDIS_SCAN_PAGE_SIZE_DEFAULT, REDIS_SCAN_PAGE_SIZE_MIN, REDIS_SCAN_PAGE_SIZE_MAX, REDIS_SCAN_PAGE_SIZE_OPTIONS } from "@/lib/redis/redisKeyPattern";
 import { normalizeRedisKeyTemplates, redisKeyTemplatesToTextarea } from "@/lib/redis/redisKeyTemplates";
 import { normalizeRedisDatabaseValue } from "@/lib/redis/redisDatabaseIndex";
+import { REDIS_VALUE_PREVIEW_LIMIT_KIB_MAX, REDIS_VALUE_PREVIEW_LIMIT_KIB_MIN, normalizeRedisValuePreviewLimitKiB } from "@/lib/redis/redisValuePreviewLimit";
 import { normalizeGlobalConnectTimeoutSecs, normalizeGlobalQueryTimeoutSecs, useSettingsStore } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
@@ -85,7 +88,7 @@ import { firstZooKeeperEndpoint, normalizeZooKeeperConnectString } from "@/lib/z
 import { setZooKeeperAuthScheme, zooKeeperAuthScheme as resolveZooKeeperAuthScheme, type ZooKeeperAuthScheme } from "@/lib/zookeeper/zookeeperConnectionOptions";
 import { isLocalFileTypeDb } from "@/lib/connection/connectionFile";
 import { MQ_PINNED_VERSION_OPTIONS, pinnedVersionToSelection, selectionToPinnedVersion } from "@/lib/mq/mqPinnedVersionOptions";
-import { mongodbAuthFailureHint, mongoConnectionUsesOidc, mongoUrlParam, mongoUrlParamIsTrue, normalizeMongoTlsFormState, setMongoUrlParam, setMongoUrlParamBoolean } from "@/lib/mongo/mongoConnectionOptions";
+import { looksLikeMongoSrvHost, mongodbAuthFailureHint, mongoConnectionUsesOidc, mongoSrvConnectionString, mongoUrlParam, mongoUrlParamIsTrue, normalizeMongoTlsFormState, setMongoUrlParam, setMongoUrlParamBoolean } from "@/lib/mongo/mongoConnectionOptions";
 import { isMongoLegacyDriverProfile } from "@/lib/mongo/mongoCapabilities";
 import { mysqlCleartextPasswordAuthEnabled, setMysqlCleartextPasswordAuthEnabled } from "@/lib/database/mysqlConnectionOptions";
 import { supportsOracleDatabaseLinks } from "@/lib/database/oracleDatabaseLinks";
@@ -293,6 +296,7 @@ const showConnectionNotesInSidebar = computed({
 });
 const editGlobalConnectTimeoutSecs = ref(settingsStore.editorSettings.globalConnectTimeoutSecs);
 const editGlobalQueryTimeoutSecs = ref(settingsStore.editorSettings.globalQueryTimeoutSecs);
+const editRedisValuePreviewLimitKiB = ref(settingsStore.editorSettings.redisValuePreviewLimitKiB);
 const open = defineModel<boolean>("open", { default: false });
 const isDesktop = isTauriRuntime();
 
@@ -454,6 +458,7 @@ const defaultForm = (): ConnectionForm => ({
   sidebar_auto_load_all_tables: false,
   is_production: false,
   production_databases: [],
+  production_badge_scope: "database",
   visible_databases: undefined,
   save_password: true,
 });
@@ -3082,6 +3087,7 @@ watch(
     resetConnectionNoteVisibilityDraft(connectionNoteVisibilityDraft, settingsStore.editorSettings.sidebarShowConnectionNotes);
     editGlobalConnectTimeoutSecs.value = settingsStore.editorSettings.globalConnectTimeoutSecs;
     editGlobalQueryTimeoutSecs.value = settingsStore.editorSettings.globalQueryTimeoutSecs;
+    editRedisValuePreviewLimitKiB.value = settingsStore.editorSettings.redisValuePreviewLimitKiB;
     if (syncAction === "hydrate" && config) {
       appliedConnectionUpdate = connectionUpdate;
       if (connectionUpdate) applyingConnectionUpdate = true;
@@ -3147,6 +3153,7 @@ watch(
         sidebar_auto_load_all_tables: config.sidebar_auto_load_all_tables === true,
         is_production: config.is_production || false,
         production_databases: config.production_databases || [],
+        production_badge_scope: sidebarProductionBadgeScope(config),
         visible_databases: config.visible_databases,
         visible_schemas: config.visible_schemas,
         save_password: config.save_password !== false,
@@ -4420,6 +4427,11 @@ const mongoTlsAllowInvalidCertificates = computed({
     form.value.url_params = next;
   },
 });
+const mongoSrvHostSuggested = computed(() => form.value.db_type === "mongodb" && !mongoUseUrl.value && looksLikeMongoSrvHost(form.value.host));
+function switchMongoFormToSrvUrl() {
+  form.value.connection_string = mongoSrvConnectionString(form.value);
+  mongoUseUrl.value = true;
+}
 const mongoRetryWrites = computed({
   get: () => mongoUrlParamIsTrue(form.value.url_params, "retryWrites", true),
   set: (value: boolean) => {
@@ -6172,6 +6184,7 @@ function resetForm(options: { preservePickerState?: boolean } = {}) {
   resetConnectionNoteVisibilityDraft(connectionNoteVisibilityDraft, settingsStore.editorSettings.sidebarShowConnectionNotes);
   editGlobalConnectTimeoutSecs.value = settingsStore.editorSettings.globalConnectTimeoutSecs;
   editGlobalQueryTimeoutSecs.value = settingsStore.editorSettings.globalQueryTimeoutSecs;
+  editRedisValuePreviewLimitKiB.value = settingsStore.editorSettings.redisValuePreviewLimitKiB;
   selectedTransportLayerId.value = null;
   draggedTransportLayerId.value = null;
   selectedType.value = "mysql";
@@ -6619,6 +6632,13 @@ async function persistGlobalTimeoutDrafts() {
   });
 }
 
+async function persistGlobalRedisValuePreviewLimit() {
+  const next = normalizeRedisValuePreviewLimitKiB(editRedisValuePreviewLimitKiB.value);
+  editRedisValuePreviewLimitKiB.value = next;
+  if (next === settingsStore.editorSettings.redisValuePreviewLimitKiB) return;
+  await settingsStore.updateEditorSettingsAndPersist({ redisValuePreviewLimitKiB: next });
+}
+
 async function persistConnectionNoteVisibilityDraft() {
   await persistConnectionNoteVisibilityDraftState(connectionNoteVisibilityDraft, settingsStore.editorSettings.sidebarShowConnectionNotes, (value) => settingsStore.updateEditorSettingsAndPersist({ sidebarShowConnectionNotes: value }));
 }
@@ -6670,6 +6690,7 @@ async function save(options: SaveConnectionOptions = {}): Promise<boolean> {
       await ensureRequiredGaussdbMJdbcRuntime(updated);
       validateConnectionUpdateTarget();
       await persistGlobalTimeoutDrafts();
+      await persistGlobalRedisValuePreviewLimit();
       await store.updateConnection(updated);
       savedConfig = updated;
       connectionSaved = true;
@@ -6679,6 +6700,7 @@ async function save(options: SaveConnectionOptions = {}): Promise<boolean> {
       await ensureRequiredAgentDriverInstalled(config);
       await ensureRequiredGaussdbMJdbcRuntime(config);
       await persistGlobalTimeoutDrafts();
+      await persistGlobalRedisValuePreviewLimit();
       await store.addConnection(config, selectedConnectionGroupId.value);
       savedConfig = config;
       connectionSaved = true;
@@ -8383,6 +8405,12 @@ function openExternalUrl(url: string) {
                         <Label :class="connectionLabelClass">{{ t("connection.host") }}</Label>
                         <Input v-model="form.host" class="col-span-2" />
                         <Input v-model.number="form.port" type="number" class="col-span-1" />
+                      </div>
+                      <div v-if="mongoSrvHostSuggested" class="grid grid-cols-4 items-start gap-4">
+                        <div class="col-start-2 col-span-3 flex flex-col items-start gap-2 text-xs leading-5 text-muted-foreground">
+                          <span>{{ t("connection.mongoSrvHostHint") }}</span>
+                          <Button size="sm" variant="outline" @click="switchMongoFormToSrvUrl">{{ t("connection.mongoUseSrvUrl") }}</Button>
+                        </div>
                       </div>
                       <div class="grid grid-cols-4 items-center gap-4">
                         <span />
@@ -10311,7 +10339,9 @@ function openExternalUrl(url: string) {
                   </label>
                 </div>
                 <div class="grid grid-cols-4 items-center gap-4">
-                  <Label :class="connectionLabelSmallClass">{{ t("connection.readOnly") }}</Label>
+                  <Label :class="connectionLabelSmallClass">
+                    <span class="inline-flex items-center gap-1">{{ t("connection.readOnly") }} <HelpTooltip :label="t('connection.readOnlyExplanation')" /></span>
+                  </Label>
                   <label class="col-span-3 flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" v-model="form.read_only" class="mr-0" />
                     <span class="text-xs text-muted-foreground">{{ t("connection.readOnlyHint") }}</span>
@@ -10354,7 +10384,7 @@ function openExternalUrl(url: string) {
                 </div>
                 <div v-if="!isPluginConnection" class="grid grid-cols-4 items-start gap-4 rounded-[6px] border border-red-500/25 bg-red-500/[0.035] px-3 py-2.5">
                   <Label :class="[connectionLabelSmallClass, 'pt-0.5 text-red-700 dark:text-red-300']">
-                    <span class="inline-flex items-center justify-end gap-1"><ShieldAlert class="h-3.5 w-3.5" />PROD</span>
+                    <span class="inline-flex items-center justify-end gap-1"><ShieldAlert class="h-3.5 w-3.5" />PROD <HelpTooltip :label="t('production.explanation')" trigger-class="text-red-700/70 dark:text-red-300/70" /></span>
                   </Label>
                   <div class="col-span-3 grid gap-2">
                     <div class="flex items-center justify-between gap-3">
@@ -10382,6 +10412,19 @@ function openExternalUrl(url: string) {
                           {{ t(productionScopePickerLabelKey) }}
                         </Button>
                       </div>
+                      <div class="grid gap-1.5 pt-1">
+                        <Label for="production-badge-scope" class="text-xs font-medium">{{ t("production.badgeScope") }}</Label>
+                        <Select :model-value="form.production_badge_scope || 'database'" @update:model-value="form.production_badge_scope = $event as ProductionBadgeScope">
+                          <SelectTrigger id="production-badge-scope" class="h-8" :aria-label="t('production.badgeScope')"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="connection">{{ t("production.badgeScopeConnection") }}</SelectItem>
+                            <SelectItem value="database">{{ t("production.badgeScopeDatabase") }}</SelectItem>
+                            <SelectItem value="table">{{ t("production.badgeScopeTable") }}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p class="text-xs leading-5 text-muted-foreground">{{ t(`production.badgeScopeHint${form.production_badge_scope === "connection" ? "Connection" : form.production_badge_scope === "table" ? "Table" : "Database"}`) }}</p>
+                        <p class="text-xs leading-5 text-muted-foreground">{{ t("production.badgeScopeSafetyHint") }}</p>
+                      </div>
                     </template>
                   </div>
                 </div>
@@ -10399,6 +10442,16 @@ function openExternalUrl(url: string) {
                       </SelectContent>
                     </Select>
                     <p class="text-xs text-muted-foreground">{{ t("settings.redisScanPageSizeDescription") }}</p>
+                  </div>
+                </div>
+                <div v-if="form.db_type === 'redis'" class="grid grid-cols-4 items-start gap-4">
+                  <Label for="redis-value-preview-limit-input" :class="connectionLabelTopClass">{{ t("settings.redisValuePreviewLimit") }}</Label>
+                  <div class="col-span-3 space-y-1">
+                    <div class="flex items-center gap-2">
+                      <Input id="redis-value-preview-limit-input" v-model.number="editRedisValuePreviewLimitKiB" type="number" :min="REDIS_VALUE_PREVIEW_LIMIT_KIB_MIN" :max="REDIS_VALUE_PREVIEW_LIMIT_KIB_MAX" step="1" class="h-8 w-32 text-xs" />
+                      <span class="text-xs text-muted-foreground">KiB</span>
+                    </div>
+                    <p class="text-xs text-muted-foreground">{{ t("settings.redisValuePreviewLimitDescription") }}</p>
                   </div>
                 </div>
               </div>
@@ -11045,7 +11098,24 @@ function openExternalUrl(url: string) {
 .connection-dialog-content {
   display: flex;
   flex-direction: column;
+  height: min(800px, calc(var(--dbx-viewport-height) - 2rem));
+  /* legacy WebViews without dvh support clamp through the viewport variable */
   max-height: calc(var(--dbx-viewport-height) - 2rem);
+  overflow: hidden;
+}
+
+.connection-dialog-content [data-slot="tabs-list"] {
+  flex-shrink: 0;
+}
+
+.connection-dialog-content [data-slot="tabs-content"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.connection-dialog-content .connection-dialog-footer {
+  flex-shrink: 0;
 }
 
 .connection-dialog-content--config {

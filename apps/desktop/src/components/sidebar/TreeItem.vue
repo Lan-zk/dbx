@@ -79,7 +79,7 @@ import { findTreeNodeById } from "@/lib/sql/newQueryContext";
 import { resolveTableVGroupDropTarget, setTableVGroupDropTargetNodeId, tableVGroupDropTargetNodeId } from "@/lib/sidebar/sidebarTableVGroupDrag";
 import { connectionDisplayUrlScheme } from "@/lib/connection/connectionPresentation";
 import { redactConnectionStringSecrets } from "@/lib/connection/connectionStringRedaction";
-import { isFocusSearchShortcut } from "@/lib/editor/keyboardShortcuts";
+import { isExecuteSqlShortcut, isFocusSearchShortcut } from "@/lib/editor/keyboardShortcuts";
 import { encodeSpannerResourcePath } from "@/lib/connection/spannerResourcePath";
 import { hexToRgba } from "@/lib/common/color";
 import { sidebarDisplayTableName } from "@/lib/sidebar/sidebarTableNameDisplay";
@@ -96,7 +96,7 @@ import { supportsSidebarObjectNameFilter } from "@/lib/sidebar/sidebarObjectName
 import { hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
 import { isWindows } from "@/lib/backend/platform";
 import { flattenTree } from "@/composables/useFlatTree";
-import { productionContextForDatabase } from "@/lib/database/productionSafety";
+import { showSidebarRowProductionBadge } from "@/lib/sidebar/sidebarProductionBadge";
 import { focusSidebarRenameInput } from "@/lib/sidebar/sidebarRenameFocus";
 import { ensureSqlExtension, stripSqlExtension } from "@/lib/savedSql/savedSqlFileName";
 import { savedSqlErrorMessage } from "@/lib/savedSql/savedSqlErrors";
@@ -203,6 +203,8 @@ const props = defineProps<{
   pendingRename?: boolean;
   highlighted?: boolean;
   commentLabelWidth?: number;
+  /** This row is rendered as the fixed database/schema context. */
+  isStickyContext?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -229,40 +231,9 @@ const activeNode = shallowRef<TreeNode>(props.node);
 
 const isDisabledTrigger = computed(() => activeNode.value.type === "trigger" && (activeNode.value.meta as TriggerInfo | undefined)?.enabled === false);
 
-// Marked rows answer "which environment am I looking at" for the connection and
-// database that carry the mark, plus the objects below them: a long tree scrolls
-// the boundary row out of sight, and that is exactly when the marker is needed.
-// Grouping rows (group-*), detail rows (column, index, …) and chrome rows stay
-// unmarked so the badge keeps pointing at write targets.
-const PRODUCTION_BADGE_NODE_TYPES: ReadonlySet<TreeNode["type"]> = new Set([
-  "connection",
-  "database",
-  "redis-db",
-  "mongo-db",
-  "table",
-  "table-vgroup",
-  "view",
-  "materialized_view",
-  "procedure",
-  "function",
-  "sequence",
-  "synonym",
-  "type",
-  "package",
-  "job",
-  "extension",
-  "event-trigger",
-  "oracle-db-link",
-  "mongo-collection",
-  "dynamodb-table",
-  "vector-collection",
-  "elasticsearch-index",
-]);
-
 const showProductionBadge = computed(() => {
-  const connectionId = activeNode.value.connectionId;
-  const context = productionContextForDatabase(connectionId ? connectionStore.getConfig(connectionId) : undefined, activeNode.value.database);
-  return context.active && PRODUCTION_BADGE_NODE_TYPES.has(activeNode.value.type);
+  const node = activeNode.value;
+  return showSidebarRowProductionBadge(node, node.connectionId ? connectionStore.getConfig(node.connectionId) : undefined, props.isStickyContext);
 });
 
 function currentDatabaseType(): DatabaseType | undefined {
@@ -963,7 +934,8 @@ function refreshTrailingCommentMeasurement() {
 }
 
 function formattedObjectStorage(): string {
-  if (settingsStore.editorSettings.sidebarObjectInfoMode !== "size" || (activeNode.value.type !== "database" && activeNode.value.type !== "table" && activeNode.value.type !== "materialized_view")) return "";
+  const mode = settingsStore.editorSettings.sidebarObjectInfoMode;
+  if ((mode !== "size" && mode !== "comment-and-size") || (activeNode.value.type !== "database" && activeNode.value.type !== "table" && activeNode.value.type !== "materialized_view")) return "";
   return formatSidebarObjectStorage(activeNode.value.sizeBytes);
 }
 
@@ -971,7 +943,11 @@ function formattedObjectStorage(): string {
 // 后留下一大段空白。无论全局是 aligned 还是 inline，连接节点的 comment 都紧跟 label。
 const alignedCommentLabelWidth = computed(() => (settingsStore.editorSettings.sidebarObjectInfoMode === "comment-aligned" && activeNode.value.type !== "connection" ? props.commentLabelWidth : undefined));
 
-function alignedCommentLeadingStyle(): { width: string } | undefined {
+function alignedCommentLeadingStyle(): { width: string } | { maxWidth: string } | undefined {
+  if (settingsStore.editorSettings.sidebarObjectInfoMode === "comment-and-size" && trailingComment.value) {
+    // Reserve the inline comment's margin so a long name cannot push into the size column.
+    return { maxWidth: "max(0px, calc(100% - 1rem))" };
+  }
   const width = alignedCommentLeadingWidth(alignedCommentLabelWidth.value, canTreeNodePin(activeNode.value.type));
   return width === undefined ? undefined : { width: `${width}px` };
 }
@@ -1057,7 +1033,7 @@ const rowStyle = computed(() => {
   const backgroundColor = hexToRgba(color, isActiveConnectionScope.value ? 0.14 : 0.08);
   return {
     paddingLeft: paddingLeft.value,
-    paddingRight: trailingComment.value ? "12px" : undefined,
+    paddingRight: props.isStickyContext && !showProductionBadge.value ? "72px" : trailingComment.value ? "12px" : undefined,
     "--tree-connection-row-bg": backgroundColor,
     "--tree-connection-row-hover-bg": hexToRgba(color, isActiveConnectionScope.value ? 0.2 : 0.16),
     "--tree-connection-active-bg": hexToRgba(color, 0.18),
@@ -1110,6 +1086,10 @@ function onTableSearchControlKeydown(event: KeyboardEvent) {
     input?.focus();
     input?.select();
   }
+  // Let the app-level shortcut handler open the database default query while
+  // the table-search input remains focused. Other tree-local key handling
+  // must stay contained in the search control.
+  if (isExecuteSqlShortcut(event, settingsStore.editorSettings.shortcuts)) return;
   event.stopPropagation();
 }
 
@@ -1725,7 +1705,7 @@ function onKeydown(event: KeyboardEvent) {
             <Ban class="h-2.5 w-2.5 stroke-[3]" aria-hidden="true" />
           </span>
         </span>
-        <div ref="trailingCommentLayoutRef" :class="hasTrailingMetadata() ? 'flex flex-1 min-w-0 items-center' : 'contents'">
+        <div ref="trailingCommentLayoutRef" :class="[hasTrailingMetadata() ? 'flex flex-1 min-w-0 items-center' : 'contents', { 'overflow-hidden': settingsStore.editorSettings.sidebarObjectInfoMode === 'comment-and-size' }]">
           <div ref="trailingCommentLeadingRef" :class="trailingComment ? 'flex max-w-full min-w-0 shrink-0 items-center gap-2' : formattedObjectStorage() ? 'flex min-w-0 flex-1 items-center gap-2' : 'contents'" :style="alignedCommentLeadingStyle()">
             <input
               v-if="isRenamingGroup || isRenamingSavedSql || isRenamingConnection"

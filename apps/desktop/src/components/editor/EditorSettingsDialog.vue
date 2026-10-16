@@ -64,6 +64,7 @@ import {
   useSettingsStore,
   AI_PROVIDER_PRESETS,
   AI_PROVIDER_PARTNER_PRESETS,
+  CC_SWITCH_PROVIDER_ID,
   AI_OUTPUT_TOKENS_MAX,
   AI_OUTPUT_TOKENS_MIN,
   EDITOR_THEMES,
@@ -133,6 +134,7 @@ import {
 import { EDITOR_FONT_FAMILY_CSS_VAR, EDITOR_FONT_SIZE_CSS_VAR, createRunStatementButtonDom, loadEditorTheme, editorFontTheme } from "@/lib/editor/editorThemes";
 import { orderAiConfigsForDisplay } from "@/lib/ai/aiConfigOrdering";
 import { isAiConnectionTestConfigCurrent } from "@/lib/ai/aiConnectionTest";
+import { formatAiInlineMarkdownFragment, handleAiMarkdownLinkClick } from "@/lib/ai/aiMarkdown";
 import { MAX_AGENT_TURNS_DEFAULT, MAX_AGENT_TURNS_MAX, MAX_AGENT_TURNS_MIN, maxAgentTurnsOutOfRange, normalizeMaxAgentTurns } from "@/lib/ai/maxAgentTurns";
 import type { DriverStoreTab } from "@/lib/connection/agentDriverInstallHint";
 import ThemeCustomizerDialog from "./ThemeCustomizerDialog.vue";
@@ -148,6 +150,8 @@ import { importClipboardApiKeyAfterConfirmation, type AiConfigDeepLinkDraft } fr
 import { clearDebugLogs as clearStoredDebugLogs, downloadDebugLogs, getDebugLogBundleText } from "@/lib/backend/debugLog";
 import {
   aiTestConnection,
+  loadCcSwitchAiConfigs,
+  loadMagpieAiConfigs,
   checkMcpServerStatus,
   installMcpServer,
   installNativeMcpServer,
@@ -161,6 +165,7 @@ import {
   saveWebMcpHttpSettings,
   rotateWebMcpToken,
   forgetSnippetSavedToken,
+  forgetSnippetSavedPassphrase,
   forgetWebdavSyncSecretsPassphrase,
   forgetWebdavSavedPassword,
   getAppSupportInfo,
@@ -181,6 +186,7 @@ import {
   saveWebdavSyncSecretsPreference,
   saveWebdavSavedPassword,
   saveSnippetSavedToken,
+  saveSnippetSavedPassphrase,
   saveSnippetSyncId,
   retrySnippetLegacyCleanup,
   snippetSyncDownload,
@@ -188,6 +194,7 @@ import {
   snippetSyncSettings,
   snippetSyncTest,
   snippetSyncUpload,
+  snippetPassphraseStatus,
   snippetTokenStatus,
   webdavPasswordStatus,
   webdavSyncDownload,
@@ -196,6 +203,7 @@ import {
   webdavSyncTest,
   webdavSyncUpload,
   listInstalledAgentsLocal,
+  listPlugins,
   type AppSupportInfo,
   type McpHttpServerSettings,
   type McpHttpServerStatus,
@@ -208,6 +216,21 @@ import {
   type SyncSnapshotCatalog,
   type WebDavConfig,
 } from "@/lib/backend/api";
+import {
+  MAX_SNIPPET_AUTO_UPLOAD_INTERVAL_MINUTES,
+  normalizedSnippetAutoUploadInterval,
+  readSnippetAutoUploadConfig,
+  readSnippetLastSuccessfulUpload,
+  readSnippetRemoteContentHash,
+  snippetRemoteContentHashKey,
+  SNIPPET_AUTO_UPLOAD_CONFIG_CHANGED_EVENT,
+  SNIPPET_LAST_UPLOAD_CHANGED_EVENT,
+  writeSnippetAutoUploadFields,
+  writeSnippetLastSuccessfulUpload,
+  writeSnippetAutoUploadSelection,
+  writeSnippetRemoteContentHash,
+  withSnippetSyncLock,
+} from "@/lib/cloudSync/snippetAutoUploadConfig";
 import { createModifierDoubleTapShortcutController } from "@/lib/editor/modifierDoubleTapShortcut";
 import { eventToModifierOnlyShortcut, eventToShortcut } from "@/lib/editor/keyboardShortcuts";
 import { shortcutRecorderAction } from "@/lib/editor/shortcutRecorder";
@@ -235,7 +258,9 @@ import { currentStatementFrameRangeTo } from "@/lib/sql/currentStatementFrame";
 import { currentStatementFrameLayer } from "@/lib/editor/codemirrorCurrentStatementFrameLayer";
 import { buildQueryEditorLineNumbersExtension } from "@/lib/editor/queryEditorLineNumbers";
 import { normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sql/sqlFormatterConfig";
-import { validateConfigName, generateId, type AiConfigItem, type ConfigNameValidationResult } from "@/lib/ai/aiConfigList";
+import { prepareImportedAiConfigs, validateConfigName, generateId, type AiConfigItem, type ConfigNameValidationResult } from "@/lib/ai/aiConfigList";
+import { aiImportSelectableModels, createAiImportDrafts, normalizeAiImportSourceConfigs, selectedAiImportConfigs, type AiImportDraft } from "@/lib/ai/aiImportSelection";
+import type { CcSwitchImportSkipped } from "@/types/ai";
 import { currentExecutableStatementRange, type SqlTextRange } from "@/lib/sql/sqlStatementRanges";
 import { executableStatementRangeCacheForDoc, executableStatementRangeStartingAt, type ExecutableStatementRangeCache } from "@/lib/sql/executableStatementRangeCache";
 import { EMPTY_TABLE_COLUMN_TEMPLATE_DATA_TYPE, parseTableColumnTemplateFields, TABLE_COLUMN_TEMPLATE_DATABASE_TYPES, tableColumnTemplateRowsToSettings } from "@/lib/table/tableColumnTemplates";
@@ -281,7 +306,8 @@ import {
 import { isMacOS, isWindows } from "@/lib/backend/platform";
 import { combineDataTypeForDatabase, dataTypeLengthInputValue, getDataTypeOptions, getDefaultLengthForType, isDataTypeLengthDisabled, splitDataType } from "@/lib/table/tableStructureEditorState";
 import { useToast } from "@/composables/useToast";
-import type { DatabaseType, SqlShortcutAction, SqlSnippet } from "@/types/database";
+import type { InstalledPlugin, DatabaseType, SqlShortcutAction, SqlSnippet } from "@/types/database";
+import { getCcSwitchPluginStatus, isCcSwitchPluginAvailable, isMagpieImportAvailable, MAGPIE_IMPORT_MINIMUM_PLUGIN_VERSION } from "@/lib/ai/ccSwitch";
 import { uuid } from "@/lib/common/utils";
 import { DEFAULT_SQL_SHORTCUT_SELECT_LIMIT } from "@/lib/sql/sqlDialectSelectLimit";
 import {
@@ -362,7 +388,11 @@ import {
   MAX_WEB_DAV_AUTO_UPLOAD_INTERVAL_MINUTES,
   formatWebDavAutoUploadInterval,
   normalizedWebDavAutoUploadInterval,
+  readWebDavLastSuccessfulSync,
+  recordWebDavSyncSuccess,
   readSyncMethod,
+  WEB_DAV_LAST_SUCCESSFUL_SYNC_STORAGE_KEY,
+  WEB_DAV_SYNC_SUCCESS_EVENT,
   writeWebDavAutoUploadFields,
   writeWebDavBackupSelection,
   writeSyncMethod,
@@ -536,6 +566,7 @@ const emit = defineEmits<{
   "update-all": [];
   "open-driver-store": [target?: DriverStoreTab];
   "open-plugin-center": [];
+  "open-cc-switch-plugin-center": [];
   "open-mcp-settings": [];
   "open-update-center": [];
   "ai-config-deep-link-handled": [];
@@ -608,6 +639,8 @@ function onSettingsRootOpenChange(value: boolean) {
 function closeSettings() {
   requestCloseSettings(false);
 }
+
+defineExpose({ requestClose: closeSettings });
 
 function cancelUnsavedSettingsClose() {
   showUnsavedSettingsCloseConfirm.value = false;
@@ -4678,6 +4711,11 @@ const webdavAutoUploadIntervalHint = computed(() => {
 const webdavBusy = ref<"" | "test" | "upload" | "download">("");
 const webdavMessage = ref("");
 const webdavError = ref(false);
+const webdavLastSuccessfulSyncAt = ref<string | null>(null);
+const webdavLastSuccessfulSyncText = computed(() => {
+  if (!webdavLastSuccessfulSyncAt.value) return t("settings.syncNeverSuccessful");
+  return new Date(webdavLastSuccessfulSyncAt.value).toLocaleString(locale.value);
+});
 const localBackupSecretsPassphrase = ref("");
 const localBackupBusy = ref<"" | "export" | "import">("");
 const localBackupMessage = ref("");
@@ -4695,27 +4733,99 @@ const snippetInstanceUrl = ref(localStorage.getItem("dbx-gitlab-instance-url") |
 const activeSnippetInstanceUrl = ref(snippetInstanceUrl.value);
 const snippetInstanceError = ref("");
 const snippetPreferenceKey = () => `dbx-snippet-remember-token-${snippetProvider.value}${snippetProvider.value === "gitlab" ? `-${activeSnippetInstanceUrl.value}` : ""}`;
+const snippetPassphrasePreferenceKey = () => `dbx-snippet-remember-passphrase-${snippetProvider.value}${snippetProvider.value === "gitlab" ? `-${activeSnippetInstanceUrl.value}` : ""}`;
 const snippetId = ref("");
 const snippetToken = ref("");
 const snippetRememberToken = ref(localStorage.getItem(snippetPreferenceKey()) === "true");
 const snippetHasSavedToken = ref(false);
 const snippetPassphrase = ref("");
+const snippetRememberPassphrase = ref(localStorage.getItem(snippetPassphrasePreferenceKey()) === "true");
+const snippetHasSavedPassphrase = ref(false);
+const snippetRemoteContentHashCache = ref(new Map<string, string | null>());
+const initialSnippetAutoUploadConfig = readSnippetAutoUploadConfig();
+const snippetAutoUploadEnabled = ref(initialSnippetAutoUploadConfig.enabled);
+const snippetAutoUploadIntervalMinutes = ref(initialSnippetAutoUploadConfig.intervalMinutes);
+const snippetAutoUploadIntervalHint = computed(() => {
+  const formatted = formatWebDavAutoUploadInterval(snippetAutoUploadIntervalMinutes.value, locale.value, {
+    minute: t("settings.syncAutoUploadUnitMinute"),
+    hour: t("settings.syncAutoUploadUnitHour"),
+    day: t("settings.syncAutoUploadUnitDay"),
+  });
+  return t("settings.syncAutoUploadScheduleHint", { interval: formatted.interval });
+});
 const snippetSecretsPassphrase = ref("");
 const snippetIncludeSecrets = ref(false);
 const snippetRestoreSecrets = ref(false);
 const snippetBusy = ref<"" | "test" | "upload" | "download" | "migrate" | "cleanup">("");
 const snippetMessage = ref("");
 const snippetError = ref(false);
+function currentSnippetLastSuccessfulUpload(): string | undefined {
+  const instanceUrl = snippetProvider.value === "gitlab" ? activeSnippetInstanceUrl.value : undefined;
+  return readSnippetLastSuccessfulUpload(snippetProvider.value, instanceUrl, snippetId.value);
+}
+const snippetLastUploadAt = ref(currentSnippetLastSuccessfulUpload());
+const snippetLastUploadDisplay = computed(() => {
+  if (!snippetLastUploadAt.value) return "";
+  const date = new Date(snippetLastUploadAt.value);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = new Intl.DateTimeFormat(locale.value, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return t("settings.syncSnippetLastSuccessfulUpload", { time });
+});
 const legacySnippetId = ref("");
 const pendingLegacyCleanupId = ref("");
 const snippetSyncSettingsLoading = ref(true);
 
 watch(syncMethodTab, (value) => writeSyncMethod(value), { immediate: true });
 
+function refreshSnippetLastUploadTime() {
+  snippetLastUploadAt.value = currentSnippetLastSuccessfulUpload();
+}
+
+watch([snippetProvider, activeSnippetInstanceUrl, snippetId], refreshSnippetLastUploadTime);
+onMounted(() => window.addEventListener(SNIPPET_LAST_UPLOAD_CHANGED_EVENT, refreshSnippetLastUploadTime));
+onUnmounted(() => window.removeEventListener(SNIPPET_LAST_UPLOAD_CHANGED_EVENT, refreshSnippetLastUploadTime));
+
 const webdavReady = computed(() => !!webdavEndpoint.value.trim() && !webdavBusy.value);
 const localBackupCanIncludeSecrets = computed(() => !!localBackupSecretsPassphrase.value.trim());
 const snippetReady = computed(() => !snippetSyncSettingsLoading.value && !snippetBusy.value && (snippetProvider.value !== "gitlab" || (!snippetInstanceError.value && snippetInstanceUrl.value === activeSnippetInstanceUrl.value)) && (!!snippetToken.value.trim() || snippetHasSavedToken.value));
-const snippetUploadReady = computed(() => snippetReady.value && !!snippetPassphrase.value.trim());
+const snippetUploadReady = computed(() => snippetReady.value && (!!snippetPassphrase.value.trim() || snippetHasSavedPassphrase.value));
+const snippetAutoUploadRequirements = computed(() => {
+  if (snippetSyncSettingsLoading.value) return [];
+
+  const requirements: string[] = [];
+  if (snippetProvider.value === "gitlab" && (snippetInstanceError.value || snippetInstanceUrl.value !== activeSnippetInstanceUrl.value)) {
+    requirements.push(t("settings.syncSnippetAutoUploadInvalidGitLabInstance"));
+  }
+  if (!snippetHasSavedToken.value) requirements.push(t("settings.syncSnippetAutoUploadMissingToken"));
+  if (!snippetHasSavedPassphrase.value) requirements.push(t("settings.syncSnippetAutoUploadMissingPassphrase"));
+
+  const id = snippetId.value.trim();
+  if (!id) {
+    requirements.push(t("settings.syncSnippetAutoUploadMissingSnippet"));
+  } else {
+    const instanceUrl = snippetProvider.value === "gitlab" ? activeSnippetInstanceUrl.value : undefined;
+    const hashKey = snippetRemoteContentHashKey(snippetProvider.value, instanceUrl, id);
+    const hashCache = snippetRemoteContentHashCache.value;
+    const remoteContentHash = hashCache.has(hashKey) ? hashCache.get(hashKey) : readSnippetRemoteContentHash(snippetProvider.value, instanceUrl, id);
+    if (!remoteContentHash) requirements.push(t("settings.syncSnippetAutoUploadMissingBaseline"));
+  }
+  return requirements;
+});
+const snippetAutoUploadReady = computed(() => !snippetSyncSettingsLoading.value && snippetAutoUploadRequirements.value.length === 0);
+const snippetAutoUploadSetupHint = computed(() => {
+  if (snippetSyncSettingsLoading.value) return t("settings.syncSnippetAutoUploadChecking");
+  return t("settings.syncSnippetAutoUploadNeedsSetup", {
+    requirements: snippetAutoUploadRequirements.value.join(t("settings.syncSnippetAutoUploadRequirementSeparator")),
+  });
+});
 // Legacy plaintext snippets have no outer encryption password. Let the
 // backend require one only after it detects an encrypted envelope so those
 // snapshots remain recoverable for migration.
@@ -4735,6 +4845,15 @@ function currentSnippetAccountConfig(): SnippetSyncConfig {
   return { ...currentSnippetConfig(), token: undefined };
 }
 
+function persistSnippetRemoteContentHash(snippetId: string, remoteContentHash: string | undefined) {
+  const provider = snippetProvider.value;
+  const instanceUrl = provider === "gitlab" ? activeSnippetInstanceUrl.value : undefined;
+  writeSnippetRemoteContentHash(provider, instanceUrl, snippetId, remoteContentHash);
+  const cache = new Map(snippetRemoteContentHashCache.value);
+  cache.set(snippetRemoteContentHashKey(provider, instanceUrl, snippetId), remoteContentHash || null);
+  snippetRemoteContentHashCache.value = cache;
+}
+
 async function refreshSnippetTokenStatus() {
   const account = `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`;
   try {
@@ -4744,6 +4863,18 @@ async function refreshSnippetTokenStatus() {
     if (status.hasSavedToken) snippetRememberToken.value = true;
   } catch {
     if (account === `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`) snippetHasSavedToken.value = false;
+  }
+}
+
+async function refreshSnippetPassphraseStatus() {
+  const account = `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`;
+  try {
+    const status = await snippetPassphraseStatus(currentSnippetAccountConfig());
+    if (account !== `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`) return;
+    snippetHasSavedPassphrase.value = status.hasSavedPassphrase;
+    if (status.hasSavedPassphrase) snippetRememberPassphrase.value = true;
+  } catch {
+    if (account === `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`) snippetHasSavedPassphrase.value = false;
   }
 }
 
@@ -4775,7 +4906,10 @@ async function refreshSnippetSyncSettings(provider = snippetProvider.value, inst
 }
 
 async function persistSnippetSyncId() {
-  await saveSnippetSyncId(snippetProvider.value, snippetId.value.trim() || undefined, snippetProvider.value === "gitlab" ? activeSnippetInstanceUrl.value : undefined);
+  const id = snippetId.value.trim();
+  const instanceUrl = snippetProvider.value === "gitlab" ? activeSnippetInstanceUrl.value : undefined;
+  await saveSnippetSyncId(snippetProvider.value, id || undefined, instanceUrl);
+  if (!id || !readSnippetRemoteContentHash(snippetProvider.value, instanceUrl, id)) snippetAutoUploadEnabled.value = false;
 }
 
 function commitSnippetInstance() {
@@ -4791,14 +4925,20 @@ function commitSnippetInstance() {
   if (snippetInstanceUrl.value === activeSnippetInstanceUrl.value) return;
   activeSnippetInstanceUrl.value = snippetInstanceUrl.value;
   localStorage.setItem("dbx-gitlab-instance-url", activeSnippetInstanceUrl.value);
+  syncSnippetAutoUploadPreference();
+  window.dispatchEvent(new Event(SNIPPET_AUTO_UPLOAD_CONFIG_CHANGED_EVENT));
   snippetRememberToken.value = localStorage.getItem(snippetPreferenceKey()) === "true";
+  snippetRememberPassphrase.value = localStorage.getItem(snippetPassphrasePreferenceKey()) === "true";
   snippetToken.value = "";
+  snippetPassphrase.value = "";
   snippetHasSavedToken.value = false;
+  snippetHasSavedPassphrase.value = false;
   snippetId.value = "";
   legacySnippetId.value = "";
   pendingLegacyCleanupId.value = "";
   snippetSyncSettingsLoading.value = true;
   void refreshSnippetTokenStatus();
+  void refreshSnippetPassphraseStatus();
   void refreshSnippetSyncSettings();
 }
 
@@ -4815,16 +4955,79 @@ async function applySnippetTokenPreference() {
   }
 }
 
+async function clearSnippetSavedToken() {
+  const accountKey = `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`;
+  const accountConfig = currentSnippetAccountConfig();
+  snippetHasSavedToken.value = false;
+  snippetRememberToken.value = false;
+  snippetAutoUploadEnabled.value = false;
+  try {
+    await withSnippetSyncLock(() => forgetSnippetSavedToken(accountConfig));
+    snippetToken.value = "";
+  } catch (error: any) {
+    if (accountKey === `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`) {
+      snippetHasSavedToken.value = true;
+      snippetRememberToken.value = true;
+      snippetMessage.value = error?.message || String(error);
+      snippetError.value = true;
+    }
+  }
+}
+
+async function applySnippetPassphrasePreference() {
+  const passphrase = snippetPassphrase.value.trim();
+  localStorage.setItem(snippetPassphrasePreferenceKey(), String(snippetRememberPassphrase.value));
+  if (snippetRememberPassphrase.value && passphrase) {
+    await saveSnippetSavedPassphrase(currentSnippetAccountConfig(), passphrase);
+    snippetHasSavedPassphrase.value = true;
+    snippetPassphrase.value = "";
+    return;
+  }
+  if (!snippetRememberPassphrase.value && snippetHasSavedPassphrase.value) {
+    await forgetSnippetSavedPassphrase(currentSnippetAccountConfig());
+    snippetHasSavedPassphrase.value = false;
+    snippetAutoUploadEnabled.value = false;
+  }
+}
+
+async function clearSnippetSavedPassphrase() {
+  const accountKey = `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`;
+  const accountConfig = currentSnippetAccountConfig();
+  snippetHasSavedPassphrase.value = false;
+  snippetRememberPassphrase.value = false;
+  snippetAutoUploadEnabled.value = false;
+  try {
+    await withSnippetSyncLock(() => forgetSnippetSavedPassphrase(accountConfig));
+    snippetPassphrase.value = "";
+  } catch (error: any) {
+    if (accountKey === `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`) {
+      snippetHasSavedPassphrase.value = true;
+      snippetRememberPassphrase.value = true;
+    }
+    snippetMessage.value = error?.message || String(error);
+    snippetError.value = true;
+  }
+}
+
+function syncSnippetAutoUploadPreference() {
+  const config = readSnippetAutoUploadConfig();
+  snippetAutoUploadEnabled.value = config.enabled;
+  snippetAutoUploadIntervalMinutes.value = config.intervalMinutes;
+}
+
 async function runSnippetAction(kind: "test" | "upload" | "download" | "migrate" | "cleanup", action: () => Promise<string>, persistCurrentSnippetId = true) {
   snippetBusy.value = kind;
   snippetMessage.value = "";
   snippetError.value = false;
   try {
-    localStorage.setItem("dbx-snippet-provider", snippetProvider.value);
-    localStorage.setItem(snippetPreferenceKey(), String(snippetRememberToken.value));
-    if (persistCurrentSnippetId) await persistSnippetSyncId();
-    await applySnippetTokenPreference();
-    snippetMessage.value = await action();
+    await withSnippetSyncLock(async () => {
+      localStorage.setItem("dbx-snippet-provider", snippetProvider.value);
+      localStorage.setItem(snippetPreferenceKey(), String(snippetRememberToken.value));
+      if (persistCurrentSnippetId) await persistSnippetSyncId();
+      await applySnippetTokenPreference();
+      await applySnippetPassphrasePreference();
+      snippetMessage.value = await action();
+    });
   } catch (e: any) {
     snippetMessage.value = e?.message || String(e);
     if (kind === "upload" && snippetMessage.value.includes("legacy unencrypted DBX snapshot")) {
@@ -4868,6 +5071,9 @@ async function migrateLegacySnippet() {
       const summary = await snippetSyncUpload(config, settingsStore.editorSettings, snippetPassphrase.value, snippetIncludeSecrets.value, snippetSecretsPassphrase.value || undefined);
       snippetId.value = summary.snippetId;
       await persistSnippetSyncId();
+      persistSnippetRemoteContentHash(summary.snippetId, summary.remoteContentHash);
+      const instanceUrl = snippetProvider.value === "gitlab" ? activeSnippetInstanceUrl.value : undefined;
+      writeSnippetLastSuccessfulUpload(snippetProvider.value, instanceUrl, summary.snippetId);
       legacySnippetId.value = "";
       pendingLegacyCleanupId.value = summary.legacyCleanupRequiredId || "";
       if (!summary.legacyCleanupRequiredId) {
@@ -4911,6 +5117,14 @@ function currentWebDavConfig(): WebDavConfig {
     remotePath: webdavRemotePath.value.trim() || DEFAULT_WEB_DAV_REMOTE_PATH,
     userAgent: webdavUserAgent.value.trim() || undefined,
   };
+}
+
+function refreshWebDavLastSuccessfulSync() {
+  webdavLastSuccessfulSyncAt.value = readWebDavLastSuccessfulSync(currentWebDavConfig());
+}
+
+function onWebDavSyncStatusStorage(event: StorageEvent) {
+  if (event.key === null || event.key === WEB_DAV_LAST_SUCCESSFUL_SYNC_STORAGE_KEY) refreshWebDavLastSuccessfulSync();
 }
 
 function currentWebDavAccountConfig(): WebDavConfig {
@@ -5152,6 +5366,10 @@ async function confirmSyncSelection(selection: SyncSelection) {
         const summary = await snippetSyncUpload(currentSnippetConfig(), settingsStore.editorSettings, snippetPassphrase.value, selection.includeSecrets, selection.includeSecrets ? snippetSecretsPassphrase.value : undefined, selection);
         snippetId.value = summary.snippetId;
         await persistSnippetSyncId();
+        const instanceUrl = snippetProvider.value === "gitlab" ? activeSnippetInstanceUrl.value : undefined;
+        writeSnippetAutoUploadSelection(snippetProvider.value, instanceUrl, selection);
+        persistSnippetRemoteContentHash(summary.snippetId, summary.remoteContentHash);
+        writeSnippetLastSuccessfulUpload(snippetProvider.value, instanceUrl, summary.snippetId);
         return t("settings.syncSnippetUploadSuccess", { bytes: summary.bytes, id: summary.snippetId });
       });
       return;
@@ -5159,6 +5377,7 @@ async function confirmSyncSelection(selection: SyncSelection) {
     snippetRestoreSecrets.value = selection.includeSecrets;
     await runSnippetAction("download", async () => {
       const result = await snippetSyncDownload(currentSnippetConfig(), snippetPassphrase.value, selection.includeSecrets, selection.includeSecrets ? snippetSecretsPassphrase.value : undefined, selection);
+      persistSnippetRemoteContentHash(result.summary.snippetId, result.summary.remoteContentHash);
       if (result.editorSettings && typeof result.editorSettings === "object") settingsStore.updateEditorSettings(result.editorSettings as any);
       await settingsStore.updateDesktopSettings(result.desktopSettings);
       await connectionStore.initFromDisk();
@@ -5176,7 +5395,9 @@ async function confirmSyncSelection(selection: SyncSelection) {
   webdavSyncSecrets.value = selection.includeSecrets;
   if (syncSelectionMode.value === "upload") {
     await runWebDavAction("upload", async () => {
-      const summary = await webdavSyncUpload(currentWebDavConfig(), settingsStore.editorSettings, selection.includeSecrets ? webdavSecretsPassphrase.value || undefined : undefined, selection.includeSecrets, selection);
+      const config = currentWebDavConfig();
+      const summary = await webdavSyncUpload(config, settingsStore.editorSettings, selection.includeSecrets ? webdavSecretsPassphrase.value || undefined : undefined, selection.includeSecrets, selection);
+      recordWebDavSyncSuccess(config);
       writeWebDavBackupSelection(selection);
       return t("settings.syncUploadSuccess", { bytes: summary.bytes, path: summary.remotePath });
     });
@@ -5184,13 +5405,15 @@ async function confirmSyncSelection(selection: SyncSelection) {
   }
 
   await runWebDavAction("download", async () => {
-    const result = await webdavSyncDownload(currentWebDavConfig(), selection.includeSecrets ? webdavSecretsPassphrase.value || undefined : undefined, selection.includeSecrets, selection);
+    const config = currentWebDavConfig();
+    const result = await webdavSyncDownload(config, selection.includeSecrets ? webdavSecretsPassphrase.value || undefined : undefined, selection.includeSecrets, selection);
     if (result.editorSettings && typeof result.editorSettings === "object") settingsStore.updateEditorSettings(result.editorSettings as any);
     await settingsStore.updateDesktopSettings(result.desktopSettings);
     await connectionStore.initFromDisk();
     await savedSqlStore.initFromStorage();
     await tunnelProfileStore.refresh();
     await settingsStore.reloadAiConfigs();
+    recordWebDavSyncSuccess(config);
     const message = t("settings.syncDownloadSuccess", { bytes: result.summary.bytes, path: result.summary.remotePath });
     if (result.applySummary.encryptedSecretsPresent && !result.applySummary.secretsApplied) return `${message} ${t("settings.syncSecretsSkipped")}`;
     if (result.applySummary.secretsApplied) return `${message} ${t("settings.syncSecretsApplied")}`;
@@ -5277,10 +5500,13 @@ watch(
       editSidebarTablePageSize.value = settingsStore.desktopSettings.sidebar_table_page_size ?? DEFAULT_SIDEBAR_TABLE_PAGE_SIZE;
       webdavPassword.value = "";
       snippetToken.value = "";
+      snippetPassphrase.value = "";
       webdavSecretsPassphrase.value = "";
+      syncSnippetAutoUploadPreference();
       await refreshWebDavPasswordStatus();
       await refreshWebDavSyncSecretsStatus();
       await refreshSnippetTokenStatus();
+      await refreshSnippetPassphraseStatus();
       await refreshSnippetSyncSettings();
       syncAiEditState();
       await applyPendingAiConfigDeepLinkDraft();
@@ -5331,6 +5557,7 @@ watch(
 watch([webdavEndpoint, webdavUsername], () => {
   void refreshWebDavPasswordStatus();
 });
+watch([webdavEndpoint, webdavUsername, webdavRemotePath], refreshWebDavLastSuccessfulSync);
 watch(webdavRememberPassword, (val) => {
   localStorage.setItem("dbx-webdav-remember-password", String(val));
 });
@@ -5338,17 +5565,66 @@ watch([webdavAutoUploadEnabled, webdavAutoUploadIntervalMinutes], () => {
   webdavAutoUploadIntervalMinutes.value = normalizedWebDavAutoUploadInterval(webdavAutoUploadIntervalMinutes.value);
   rememberWebDavFields();
 });
+watch(snippetRememberToken, async (remember) => {
+  localStorage.setItem(snippetPreferenceKey(), String(remember));
+  if (remember || !snippetHasSavedToken.value) return;
+  const accountKey = `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`;
+  const accountConfig = currentSnippetAccountConfig();
+  snippetHasSavedToken.value = false;
+  snippetAutoUploadEnabled.value = false;
+  try {
+    await withSnippetSyncLock(() => forgetSnippetSavedToken(accountConfig));
+  } catch (error: any) {
+    if (accountKey === `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`) {
+      snippetHasSavedToken.value = true;
+      snippetRememberToken.value = true;
+      snippetMessage.value = error?.message || String(error);
+      snippetError.value = true;
+    }
+  }
+});
+watch(snippetRememberPassphrase, async (remember) => {
+  localStorage.setItem(snippetPassphrasePreferenceKey(), String(remember));
+  if (remember || !snippetHasSavedPassphrase.value) return;
+  const accountKey = `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`;
+  const accountConfig = currentSnippetAccountConfig();
+  snippetHasSavedPassphrase.value = false;
+  snippetAutoUploadEnabled.value = false;
+  try {
+    await withSnippetSyncLock(() => forgetSnippetSavedPassphrase(accountConfig));
+  } catch (error: any) {
+    if (accountKey === `${snippetProvider.value}:${activeSnippetInstanceUrl.value}`) {
+      snippetHasSavedPassphrase.value = true;
+      snippetRememberPassphrase.value = true;
+      snippetMessage.value = error?.message || String(error);
+      snippetError.value = true;
+    }
+  }
+});
+watch([snippetAutoUploadEnabled, snippetAutoUploadIntervalMinutes], () => {
+  snippetAutoUploadIntervalMinutes.value = normalizedSnippetAutoUploadInterval(snippetAutoUploadIntervalMinutes.value);
+  const persisted = readSnippetAutoUploadConfig();
+  if (persisted.enabled !== snippetAutoUploadEnabled.value || persisted.intervalMinutes !== snippetAutoUploadIntervalMinutes.value) {
+    writeSnippetAutoUploadFields(snippetProvider.value, snippetProvider.value === "gitlab" ? activeSnippetInstanceUrl.value : undefined, { enabled: snippetAutoUploadEnabled.value, intervalMinutes: snippetAutoUploadIntervalMinutes.value });
+  }
+});
 watch(snippetProvider, (provider) => {
   localStorage.setItem("dbx-snippet-provider", provider);
   snippetId.value = "";
   snippetRememberToken.value = localStorage.getItem(snippetPreferenceKey()) === "true";
+  snippetRememberPassphrase.value = localStorage.getItem(snippetPassphrasePreferenceKey()) === "true";
   snippetToken.value = "";
+  snippetPassphrase.value = "";
   snippetHasSavedToken.value = false;
+  snippetHasSavedPassphrase.value = false;
   legacySnippetId.value = "";
   pendingLegacyCleanupId.value = "";
   snippetSyncSettingsLoading.value = true;
   void refreshSnippetTokenStatus();
+  void refreshSnippetPassphraseStatus();
   void refreshSnippetSyncSettings(provider);
+  syncSnippetAutoUploadPreference();
+  window.dispatchEvent(new Event(SNIPPET_AUTO_UPLOAD_CONFIG_CHANGED_EVENT));
 });
 
 watch(activeSettingsTab, async (tab) => {
@@ -5357,6 +5633,7 @@ watch(activeSettingsTab, async (tab) => {
   if (tab !== "shortcuts") applyShortcutRecording(false);
   void resetSettingsContentScroll();
   if (tab === "mcp" && !mcpStatus.value && !mcpStatusLoading.value) void refreshMcpStatus();
+  if (tab === "ai" && !isWeb) void refreshCcSwitchPluginAvailability();
   if (tab === "ai" && aiIsCliProvider.value) void ensureCliMcpStatus();
   if (tab === "ai") {
     void loadMaxAgentTurnsSetting();
@@ -5396,6 +5673,8 @@ watch(
 );
 
 onMounted(() => {
+  syncSnippetAutoUploadPreference();
+  window.addEventListener(SNIPPET_AUTO_UPLOAD_CONFIG_CHANGED_EVENT, syncSnippetAutoUploadPreference);
   window.addEventListener("blur", modifierDoubleTapRecorder.reset);
   document.addEventListener("visibilitychange", modifierDoubleTapRecorder.reset);
   window.addEventListener("pointerdown", modifierDoubleTapRecorder.cancel, true);
@@ -5404,19 +5683,26 @@ onMounted(() => {
   // 留着，回到 DBX 时再把焦点还给录入按钮；同时把「窗口不在前台」这件事显示出来。
   window.addEventListener("focus", onShortcutRecordingWindowFocus);
   window.addEventListener("blur", onShortcutRecordingWindowBlur);
+  window.addEventListener(WEB_DAV_SYNC_SUCCESS_EVENT, refreshWebDavLastSuccessfulSync);
+  window.addEventListener("storage", onWebDavSyncStatusStorage);
+  refreshWebDavLastSuccessfulSync();
   void refreshWebDavPasswordStatus();
+  if (!isWeb) void refreshCcSwitchPluginAvailability();
   checkLayoutDescTruncation();
   initTruncationObservers();
   void checkBackgroundImageFileExists();
 });
 
 onUnmounted(() => {
+  window.removeEventListener(SNIPPET_AUTO_UPLOAD_CONFIG_CHANGED_EVENT, syncSnippetAutoUploadPreference);
   window.removeEventListener("blur", modifierDoubleTapRecorder.reset);
   document.removeEventListener("visibilitychange", modifierDoubleTapRecorder.reset);
   window.removeEventListener("pointerdown", modifierDoubleTapRecorder.cancel, true);
   window.removeEventListener("compositionstart", modifierDoubleTapRecorder.cancel, true);
   window.removeEventListener("focus", onShortcutRecordingWindowFocus);
   window.removeEventListener("blur", onShortcutRecordingWindowBlur);
+  window.removeEventListener(WEB_DAV_SYNC_SUCCESS_EVENT, refreshWebDavLastSuccessfulSync);
+  window.removeEventListener("storage", onWebDavSyncStatusStorage);
   modifierDoubleTapRecorder.reset();
   clearThemePaletteOptionPreview();
   clearUiFontOptionPreview();
@@ -5739,12 +6025,134 @@ async function saveWebSqlFileUploadMaxMbSetting() {
 // AI Config Delete Confirmation
 const aiDeleteConfirmOpen = ref(false);
 const aiDeleteConfigId = ref<string | null>(null);
+const aiConfigImporting = ref(false);
+const aiConfigImportingSource = ref<"cc-switch" | "magpie" | null>(null);
+const aiImportSaving = ref(false);
+const aiImportRefreshing = ref(false);
+const aiImportDialogOpen = ref(false);
+const AI_IMPORT_NO_DEFAULT_MODEL = "__dbx_no_default_model__";
+type AiImportMessageKey = "ai.ccSwitchNoNewConfigs" | "ai.ccSwitchImportSuccess" | "ai.ccSwitchImportPartial" | "ai.magpieNoNewConfigs" | "ai.magpieImportSuccess" | "ai.magpieImportPartial";
+type AiImportSourceKey = "cc-switch" | "magpie";
+type AiImportSourceSummary = {
+  status: "idle" | "loading" | "loaded" | "error" | "unavailable";
+  total: number;
+  selected: number;
+  skipped: number;
+};
+const aiImportDrafts = ref<AiImportDraft[]>([]);
+const aiImportSkipped = ref<CcSwitchImportSkipped[]>([]);
+const aiImportMeta = ref<{
+  sourceName: "CC-SWITCH" | "Magpie";
+  noNewConfigsKey: AiImportMessageKey;
+  successKey: AiImportMessageKey;
+  partialKey: AiImportMessageKey;
+} | null>(null);
+const aiImportSelectedCount = computed(() => aiImportDrafts.value.filter((item) => item.selectable && item.selected).length);
+const aiImportSelectableCount = computed(() => aiImportDrafts.value.filter((item) => item.selectable).length);
+const aiImportAllSelected = computed(() => aiImportSelectableCount.value > 0 && aiImportSelectedCount.value === aiImportSelectableCount.value);
+const aiImportSourceCountsLoading = ref(false);
+const aiImportSourceSummaries = ref<Record<AiImportSourceKey, AiImportSourceSummary>>({
+  "cc-switch": { status: "idle", total: 0, selected: 0, skipped: 0 },
+  magpie: { status: "idle", total: 0, selected: 0, skipped: 0 },
+});
+const aiCcSwitchPlugins = ref<InstalledPlugin[]>([]);
+const aiCcSwitchPluginLoading = ref(false);
+const aiCcSwitchPluginStatus = computed(() => getCcSwitchPluginStatus(aiCcSwitchPlugins.value));
+const aiCcSwitchPluginAvailable = computed(() => isCcSwitchPluginAvailable(aiCcSwitchPlugins.value));
+const aiMagpiePluginAvailable = computed(() => isMagpieImportAvailable(aiCcSwitchPlugins.value));
+const aiCcSwitchPluginVersion = computed(() => aiCcSwitchPlugins.value.find((plugin) => plugin.manifest.id === "cc-switch")?.manifest.version ?? "");
+const magpieImportMinimumPluginVersion = MAGPIE_IMPORT_MINIMUM_PLUGIN_VERSION;
+const aiCcSwitchPluginStatusText = computed(() => {
+  if (aiCcSwitchPluginLoading.value) return "ai.ccSwitchPluginChecking";
+  return aiCcSwitchPluginStatus.value === "incompatible" ? "ai.ccSwitchPluginIncompatible" : "ai.ccSwitchPluginNotInstalledStatus";
+});
 
 const CLI_AI_PROVIDERS = new Set<AiProvider>(["claude-code-cli", "codex-cli", "opencode-cli", "pi-agent-cli", "cursor-cli", "grok-cli", "codebuddy-cli", "qoder-cli"]);
 const OPENCODE_CONTROL_ENV = new Set(["OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_DB", "OPENCODE_PERMISSION", "OPENCODE_DISABLE_PROJECT_CONFIG"]);
 const CURSOR_CONTROL_ENV = new Set(["CURSOR_CONFIG_DIR", "CURSOR_DATA_DIR"]);
 const builtinAiProviderOptions = computed(() => Object.values(AI_PROVIDER_PRESETS).filter((provider) => !isWeb || !CLI_AI_PROVIDERS.has(provider.provider)));
 const partnerAiProviderOptions = computed(() => AI_PROVIDER_PARTNER_PRESETS.filter((provider) => !isWeb || !CLI_AI_PROVIDERS.has(provider.provider)));
+
+async function refreshCcSwitchPluginAvailability() {
+  if (isWeb || aiCcSwitchPluginLoading.value) return;
+  aiCcSwitchPluginLoading.value = true;
+  try {
+    aiCcSwitchPlugins.value = await listPlugins();
+  } catch {
+    aiCcSwitchPlugins.value = [];
+  } finally {
+    aiCcSwitchPluginLoading.value = false;
+  }
+  if (aiCcSwitchPluginAvailable.value) {
+    await refreshAiImportSourceCounts();
+  } else {
+    aiImportSourceSummaries.value = {
+      "cc-switch": { status: "idle", total: 0, selected: 0, skipped: 0 },
+      magpie: { status: "idle", total: 0, selected: 0, skipped: 0 },
+    };
+  }
+}
+
+function setAiImportSourceSummary(source: AiImportSourceKey, result: Awaited<ReturnType<typeof loadCcSwitchAiConfigs>>) {
+  const sourceName = source === "magpie" ? "Magpie" : "CC-SWITCH";
+  const normalized = normalizeAiImportSourceConfigs(result.configs, sourceName);
+  const prepared = prepareImportedAiConfigs(settingsStore.aiConfigs, normalized, sourceName);
+  const importableIds = new Set(prepared.map((config) => config.id));
+  const drafts = createAiImportDrafts(normalized, importableIds);
+  aiImportSourceSummaries.value[source] = {
+    status: "loaded",
+    total: normalized.length + result.skipped.length,
+    selected: drafts.filter((draft) => draft.selectable && draft.selected).length,
+    skipped: result.skipped.length,
+  };
+}
+
+async function refreshAiImportSourceCounts() {
+  if (isWeb || !aiCcSwitchPluginAvailable.value || aiImportSourceCountsLoading.value) return;
+  aiImportSourceCountsLoading.value = true;
+  aiImportSourceSummaries.value = {
+    "cc-switch": { ...aiImportSourceSummaries.value["cc-switch"], status: "loading" },
+    magpie: {
+      ...aiImportSourceSummaries.value.magpie,
+      status: aiMagpiePluginAvailable.value ? "loading" : "unavailable",
+    },
+  };
+  const [ccSwitchResult, magpieResult] = await Promise.allSettled([loadCcSwitchAiConfigs(), aiMagpiePluginAvailable.value ? loadMagpieAiConfigs() : Promise.resolve(null)]);
+  if (ccSwitchResult.status === "fulfilled") {
+    setAiImportSourceSummary("cc-switch", ccSwitchResult.value);
+  } else {
+    aiImportSourceSummaries.value["cc-switch"] = {
+      status: "error",
+      total: 0,
+      selected: 0,
+      skipped: 0,
+    };
+  }
+  if (aiMagpiePluginAvailable.value && magpieResult.status === "fulfilled" && magpieResult.value) {
+    setAiImportSourceSummary("magpie", magpieResult.value);
+  } else if (aiMagpiePluginAvailable.value) {
+    aiImportSourceSummaries.value.magpie = {
+      status: "error",
+      total: 0,
+      selected: 0,
+      skipped: 0,
+    };
+  }
+  aiImportSourceCountsLoading.value = false;
+}
+
+function aiImportSourceSummaryText(source: AiImportSourceKey): string {
+  const summary = aiImportSourceSummaries.value[source];
+  if (summary.status === "loading") return t("ai.aiImportSourceLoading");
+  if (summary.status === "error") return t("ai.aiImportSourceReadFailed");
+  if (summary.status === "unavailable") return t("ai.magpiePluginUpdateRequired", { version: magpieImportMinimumPluginVersion });
+  if (summary.status !== "loaded") return t("ai.aiImportSourceNotLoaded");
+  return t("ai.aiImportSourceCounts", {
+    selected: summary.selected,
+    total: summary.total,
+    unsupported: summary.skipped,
+  });
+}
 
 const aiEditProvider = ref<AiProvider>("claude");
 const aiEditProviderPresetId = ref("claude");
@@ -5782,6 +6190,8 @@ const aiEditQoderCliEnvRows = ref<AiEnvRow[]>([]);
 const aiAnthropicMessagesMode = computed(() => aiEditApiStyle.value === "anthropic-messages");
 const selectedAiProviderPreset = computed(() => getAiProviderPresetOption(aiEditProviderPresetId.value));
 const selectedAiPartnerPreset = computed(() => (isAiPartnerProviderPreset(selectedAiProviderPreset.value) ? selectedAiProviderPreset.value : null));
+const selectedAiPartnerDescriptionHtml = computed(() => (selectedAiPartnerPreset.value ? formatAiInlineMarkdownFragment(t(selectedAiPartnerPreset.value.descriptionKey)) : ""));
+const aiIsCcSwitchProvider = computed(() => aiEditProviderPresetId.value === CC_SWITCH_PROVIDER_ID);
 
 const aiTesting = ref(false);
 const aiTestResult = ref<"" | "success" | "error">("");
@@ -6081,12 +6491,12 @@ function syncAiEditState() {
 function aiSelectProvider(presetId: string) {
   const preset = getAiProviderPresetOption(presetId);
   const provider = preset.provider;
-  if (isWeb && CLI_AI_PROVIDERS.has(provider)) return;
+  if (isWeb && (CLI_AI_PROVIDERS.has(provider) || presetId === CC_SWITCH_PROVIDER_ID)) return;
   if (presetId === aiEditProviderPresetId.value) return;
 
   syncAiEditState();
 
-  // Apply new provider's preset defaults to edit state
+  // CC-SWITCH is a UI-only preset; installation is initiated by its action buttons.
   aiEditProviderPresetId.value = presetId;
   aiEditProvider.value = provider;
   aiEditApiKey.value = "";
@@ -6295,6 +6705,180 @@ async function aiSetDefaultConfig(id: string) {
     await settingsStore.setDefaultAiConfig(id);
   } catch (e: any) {
     toast(e?.message || String(e), 5000);
+  }
+}
+
+function ccSwitchImportErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === "ccSwitchNotInstalled") return t("ai.ccSwitchNotInstalled");
+  if (message === "ccSwitchPluginNotInstalled") return t("ai.ccSwitchPluginNotInstalled");
+  if (message === "ccSwitchInvalidDatabase") return t("ai.ccSwitchInvalidDatabase");
+  if (message === "ccSwitchImportDesktopOnly") return t("ai.ccSwitchImportDesktopOnly");
+  if (message.startsWith("ccSwitchHomeDirectoryFailed:")) return t("ai.ccSwitchHomeDirectoryFailed");
+  if (message.startsWith("ccSwitchOpenFailed:")) return t("ai.ccSwitchOpenFailed");
+  if (message.startsWith("ccSwitchReadFailed:")) return t("ai.ccSwitchReadFailed");
+  return message;
+}
+
+function magpieImportErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === "magpieNotInstalled") return t("ai.magpieNotInstalled");
+  if (message === "magpieInvalidConfig") return t("ai.magpieInvalidConfig");
+  if (message === "magpieReadFailed") return t("ai.magpieReadFailed");
+  if (message === "ccSwitchPluginNotInstalled") return t("ai.ccSwitchPluginNotInstalled");
+  if (message.startsWith("magpieConfigDirectoryFailed:")) return t("ai.magpieConfigDirectoryFailed");
+  return message;
+}
+
+function aiImportModelSelectionValue(draft: AiImportDraft): string {
+  return draft.defaultModel || AI_IMPORT_NO_DEFAULT_MODEL;
+}
+
+function aiSetImportDefaultModel(draft: AiImportDraft, value: string) {
+  draft.defaultModel = value === AI_IMPORT_NO_DEFAULT_MODEL ? "" : value;
+}
+
+function aiToggleImportSelectionAll() {
+  const selected = !aiImportAllSelected.value;
+  for (const draft of aiImportDrafts.value) {
+    if (draft.selectable) draft.selected = selected;
+  }
+}
+
+function closeAiImportDialog() {
+  if (aiImportSaving.value || aiImportRefreshing.value) return;
+  aiImportDialogOpen.value = false;
+  aiImportDrafts.value = [];
+  aiImportSkipped.value = [];
+  aiImportMeta.value = null;
+}
+
+function stageImportedAiConfigs(result: Awaited<ReturnType<typeof loadCcSwitchAiConfigs>>, sourceName: "CC-SWITCH" | "Magpie", noNewConfigsKey: AiImportMessageKey, successKey: AiImportMessageKey, partialKey: AiImportMessageKey, preserveSelection = false) {
+  const previousDrafts = preserveSelection ? new Map(aiImportDrafts.value.map((draft) => [draft.config.id, draft] as const)) : null;
+  const normalized = normalizeAiImportSourceConfigs(result.configs, sourceName);
+  const prepared = prepareImportedAiConfigs(settingsStore.aiConfigs, normalized, sourceName);
+  const preparedById = new Map(prepared.map((config) => [config.id, config]));
+  aiImportDrafts.value = createAiImportDrafts(normalized, new Set(preparedById.keys())).map((draft) => {
+    const config = preparedById.get(draft.config.id) ?? draft.config;
+    const previous = previousDrafts?.get(draft.config.id);
+    const nextDraft = {
+      ...draft,
+      config,
+      selected: previous ? draft.selectable && previous.selected : draft.selected,
+      defaultModel: draft.defaultModel,
+    };
+    if (previous && aiImportSelectableModels(nextDraft).some((model) => model.value === previous.defaultModel)) {
+      nextDraft.defaultModel = previous.defaultModel;
+    }
+    return nextDraft;
+  });
+  aiImportSkipped.value = result.skipped;
+  const sourceKey: AiImportSourceKey = sourceName === "Magpie" ? "magpie" : "cc-switch";
+  aiImportSourceSummaries.value[sourceKey] = {
+    status: "loaded",
+    total: normalized.length + result.skipped.length,
+    selected: aiImportDrafts.value.filter((draft) => draft.selectable && draft.selected).length,
+    skipped: result.skipped.length,
+  };
+  aiImportMeta.value = { sourceName, noNewConfigsKey, successKey, partialKey };
+  aiImportDialogOpen.value = true;
+}
+
+function aiImportSkippedReason(reason: string): string {
+  const reasonKeys: Record<string, string> = {
+    ccSwitchInvalidCodexConfig: "ai.aiImportReasonInvalidCodexConfig",
+    ccSwitchInvalidProviderConfig: "ai.aiImportReasonInvalidProviderConfig",
+    ccSwitchProviderNotConfigured: "ai.aiImportReasonProviderNotConfigured",
+    ccSwitchUnsupportedProviderType: "ai.aiImportReasonUnsupportedProviderType",
+    magpieNoCompatibleEndpoint: "ai.aiImportReasonNoCompatibleEndpoint",
+    magpieProviderDisabled: "ai.aiImportReasonProviderDisabled",
+    magpieProviderHasNoModels: "ai.aiImportReasonProviderHasNoModels",
+    magpieProviderHidden: "ai.aiImportReasonProviderHidden",
+    magpieProviderNotConfigured: "ai.aiImportReasonProviderNotConfigured",
+  };
+  const key = reasonKeys[reason];
+  return key ? t(key) : reason;
+}
+
+async function confirmAiImportSelection() {
+  const meta = aiImportMeta.value;
+  const selected = selectedAiImportConfigs(aiImportDrafts.value);
+  if (!meta || selected.length === 0) {
+    toast(t("ai.aiImportNoSelection"), 4000);
+    return;
+  }
+
+  aiImportSaving.value = true;
+  const hadConfigs = settingsStore.aiConfigs.length > 0;
+  try {
+    for (const [index, config] of selected.entries()) {
+      await settingsStore.createAiConfig({
+        ...config,
+        id: generateId(),
+        isDefault: !hadConfigs && index === 0,
+      });
+    }
+    toast(
+      t(aiImportSkipped.value.length > 0 ? meta.partialKey : meta.successKey, {
+        count: selected.length,
+        skipped: aiImportSkipped.value.length,
+      }),
+      4000,
+    );
+    aiImportDialogOpen.value = false;
+    aiImportDrafts.value = [];
+    aiImportSkipped.value = [];
+    aiImportMeta.value = null;
+    await refreshAiImportSourceCounts();
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), 5000);
+  } finally {
+    aiImportSaving.value = false;
+  }
+}
+
+async function refreshAiImportSources() {
+  const meta = aiImportMeta.value;
+  if (!meta || aiImportSaving.value || aiImportRefreshing.value) return;
+  aiImportRefreshing.value = true;
+  try {
+    const result = meta.sourceName === "Magpie" ? await loadMagpieAiConfigs() : await loadCcSwitchAiConfigs();
+    stageImportedAiConfigs(result, meta.sourceName, meta.noNewConfigsKey, meta.successKey, meta.partialKey, true);
+    toast(t("ai.aiImportRefreshed"), 2500);
+  } catch (error) {
+    toast(meta.sourceName === "Magpie" ? magpieImportErrorMessage(error) : ccSwitchImportErrorMessage(error), 5000);
+  } finally {
+    aiImportRefreshing.value = false;
+  }
+}
+
+async function aiImportCcSwitchConfigs() {
+  if (isWeb || aiConfigImporting.value) return;
+  aiConfigImporting.value = true;
+  aiConfigImportingSource.value = "cc-switch";
+  try {
+    const result = await loadCcSwitchAiConfigs();
+    await stageImportedAiConfigs(result, "CC-SWITCH", "ai.ccSwitchNoNewConfigs", "ai.ccSwitchImportSuccess", "ai.ccSwitchImportPartial");
+  } catch (error) {
+    toast(ccSwitchImportErrorMessage(error), 5000);
+  } finally {
+    aiConfigImporting.value = false;
+    aiConfigImportingSource.value = null;
+  }
+}
+
+async function aiImportMagpieConfigs() {
+  if (isWeb || aiConfigImporting.value) return;
+  aiConfigImporting.value = true;
+  aiConfigImportingSource.value = "magpie";
+  try {
+    const result = await loadMagpieAiConfigs();
+    await stageImportedAiConfigs(result, "Magpie", "ai.magpieNoNewConfigs", "ai.magpieImportSuccess", "ai.magpieImportPartial");
+  } catch (error) {
+    toast(magpieImportErrorMessage(error), 5000);
+  } finally {
+    aiConfigImporting.value = false;
+    aiConfigImportingSource.value = null;
   }
 }
 
@@ -8503,6 +9087,7 @@ onUnmounted(() => {
                     <SelectItem value="comment-aligned">{{ t("settings.sidebarObjectInfoModeCommentAligned") }}</SelectItem>
                     <SelectItem value="comment-right">{{ t("settings.sidebarObjectInfoModeCommentRight") }}</SelectItem>
                     <SelectItem value="size">{{ t("settings.sidebarObjectInfoModeSize") }}</SelectItem>
+                    <SelectItem value="comment-and-size">{{ t("settings.sidebarObjectInfoModeCommentAndSize") }}</SelectItem>
                     <SelectItem value="hidden">{{ t("settings.sidebarObjectInfoModeHidden") }}</SelectItem>
                   </SelectContent>
                 </Select>
@@ -10185,6 +10770,9 @@ LIMIT 100;</pre>
                     </div>
                   </div>
 
+                  <p class="text-xs text-muted-foreground" aria-live="polite">
+                    {{ t("settings.syncLastSuccessful", { time: webdavLastSuccessfulSyncText }) }}
+                  </p>
                   <div v-if="webdavMessage" class="text-xs" :class="webdavError ? 'text-destructive' : 'text-green-600 dark:text-green-400'">
                     {{ webdavMessage }}
                   </div>
@@ -10254,12 +10842,7 @@ LIMIT 100;</pre>
                           type="button"
                           class="absolute right-1 top-1/2 inline-flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           :title="t('settings.syncClearSavedPassword')"
-                          @click="
-                            snippetRememberToken = false;
-                            forgetSnippetSavedToken(currentSnippetAccountConfig());
-                            snippetHasSavedToken = false;
-                            snippetToken = '';
-                          "
+                          @click="clearSnippetSavedToken"
                         >
                           <X class="size-3.5" />
                         </button>
@@ -10274,9 +10857,42 @@ LIMIT 100;</pre>
                     </div>
                     <div class="space-y-2 md:col-span-2">
                       <Label for="snippet-sync-passphrase">{{ t("settings.syncSnippetPassphrase") }}</Label>
-                      <PasswordInput id="snippet-sync-passphrase" v-model="snippetPassphrase" autocomplete="new-password" />
+                      <PasswordInput id="snippet-sync-passphrase" v-model="snippetPassphrase" :placeholder="snippetHasSavedPassphrase ? '••••••••' : ''" autocomplete="new-password" />
+                      <div class="flex items-center justify-between gap-3">
+                        <label class="flex items-center gap-2 text-xs text-muted-foreground">
+                          <input v-model="snippetRememberPassphrase" type="checkbox" class="h-4 w-4 shrink-0 accent-primary" />
+                          <span>{{ t("settings.syncSnippetRememberPassphrase") }}</span>
+                        </label>
+                        <Button v-if="snippetHasSavedPassphrase" type="button" variant="ghost" size="sm" class="h-7 px-2 text-xs" :title="t('settings.syncClearSavedPassword')" @click="clearSnippetSavedPassphrase">
+                          <X class="mr-1 size-3.5" />
+                          {{ t("settings.syncClearSavedPassword") }}
+                        </Button>
+                      </div>
                       <p class="text-xs text-muted-foreground">
                         {{ t("settings.syncSnippetPassphraseDescription") }}
+                      </p>
+                      <p class="text-xs text-muted-foreground">
+                        {{ t("settings.syncSnippetRememberPassphraseDescription") }}
+                      </p>
+                    </div>
+                    <div class="settings-item space-y-2 md:col-span-2 rounded-md border bg-muted/20 px-3 py-3">
+                      <label class="flex items-center gap-2 text-xs">
+                        <input v-model="snippetAutoUploadEnabled" type="checkbox" class="h-4 w-4 shrink-0 accent-primary" :disabled="!snippetAutoUploadReady && !snippetAutoUploadEnabled" />
+                        <span class="font-medium">{{ t("settings.syncSnippetAutoUpload") }}</span>
+                      </label>
+                      <div class="flex items-center gap-2">
+                        <Label for="snippet-auto-upload-interval" class="text-xs text-muted-foreground">{{ t("settings.syncSnippetAutoUploadInterval") }}</Label>
+                        <Input id="snippet-auto-upload-interval" v-model.number="snippetAutoUploadIntervalMinutes" type="number" min="1" :max="MAX_SNIPPET_AUTO_UPLOAD_INTERVAL_MINUTES" step="1" class="h-7 w-24 text-xs" :disabled="!snippetAutoUploadEnabled" />
+                        <span class="text-xs text-muted-foreground">{{ t("settings.syncAutoUploadMinutes") }}</span>
+                      </div>
+                      <p class="text-xs text-muted-foreground" aria-live="polite">
+                        {{ snippetAutoUploadIntervalHint }}
+                      </p>
+                      <p class="text-xs text-muted-foreground">
+                        {{ t("settings.syncSnippetAutoUploadDescription") }}
+                      </p>
+                      <p v-if="!snippetAutoUploadReady" role="status" aria-live="polite" class="border-l-2 border-amber-500 pl-2 text-xs text-amber-700 dark:text-amber-300">
+                        {{ snippetAutoUploadSetupHint }}
                       </p>
                     </div>
                     <div class="space-y-2 md:col-span-2">
@@ -10290,10 +10906,10 @@ LIMIT 100;</pre>
                       </label>
                     </div>
                     <div v-if="snippetIncludeSecrets || snippetRestoreSecrets || legacySnippetId" class="space-y-2 md:col-span-2">
-                      <Label for="snippet-sync-secrets-passphrase">{{ t("settings.syncSecretsPassphrase") }}</Label>
+                      <Label for="snippet-sync-secrets-passphrase">{{ t("settings.syncSnippetSecretsPassphrase") }}</Label>
                       <PasswordInput id="snippet-sync-secrets-passphrase" v-model="snippetSecretsPassphrase" autocomplete="new-password" />
                       <p class="text-xs text-muted-foreground">
-                        {{ t("settings.syncSecretsPassphraseDescription") }}
+                        {{ t("settings.syncSnippetSecretsPassphraseDescription") }}
                       </p>
                     </div>
                     <div v-if="pendingLegacyCleanupId" class="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive md:col-span-2">
@@ -10304,8 +10920,9 @@ LIMIT 100;</pre>
                       </Button>
                     </div>
                     <div class="flex flex-wrap items-center justify-between gap-3 md:col-span-2">
-                      <div v-if="snippetMessage" class="min-w-0 flex-1 text-xs" :class="snippetError ? 'text-destructive' : 'text-green-600 dark:text-green-400'">
-                        {{ snippetMessage }}
+                      <div v-if="snippetMessage || snippetLastUploadDisplay" class="min-w-0 flex-1 space-y-1 text-xs">
+                        <p v-if="snippetMessage" :class="snippetError ? 'text-destructive' : 'text-green-600 dark:text-green-400'">{{ snippetMessage }}</p>
+                        <p v-if="snippetLastUploadDisplay" class="text-muted-foreground" aria-live="polite">{{ snippetLastUploadDisplay }}</p>
                       </div>
                       <div v-else class="flex-1" />
                       <div class="flex shrink-0 flex-wrap justify-end gap-2">
@@ -10422,12 +11039,14 @@ LIMIT 100;</pre>
             <section v-else-if="activeSettingsTab === 'ai'" data-settings-search-id="ai" :class="['flex flex-col gap-5 py-2', settingsSearchTargetClass('ai')]">
               <!-- Config List View -->
               <div v-if="aiConfigListMode === 'list'" class="space-y-4">
-                <div class="flex items-center justify-between">
+                <div class="flex flex-wrap items-center justify-between gap-2">
                   <h3 class="text-sm font-medium">{{ t("ai.configList") }}</h3>
-                  <Button type="button" size="sm" @click="aiEnterEditMode()">
-                    <Plus class="mr-1 h-3.5 w-3.5" />
-                    {{ t("ai.addConfig") }}
-                  </Button>
+                  <div class="flex flex-wrap items-center justify-end gap-2">
+                    <Button type="button" size="sm" @click="aiEnterEditMode()">
+                      <Plus class="mr-1 h-3.5 w-3.5" />
+                      {{ t("ai.addConfig") }}
+                    </Button>
+                  </div>
                 </div>
 
                 <div v-if="settingsStore.aiConfigs.length === 0" class="rounded-md border border-dashed p-6 text-center">
@@ -10543,6 +11162,20 @@ LIMIT 100;</pre>
                     </div>
                   </div>
                 </div>
+              </div>
+
+              <div v-if="aiConfigListMode === 'list' && !isWeb && !aiCcSwitchPluginAvailable" class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed border-primary/30 bg-primary/5 px-3 py-3">
+                <div class="flex min-w-0 items-start gap-3">
+                  <PackageSearch class="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  <div class="min-w-0 space-y-1">
+                    <p class="text-sm font-medium">{{ t("ai.ccSwitchProvider") }}</p>
+                    <p class="text-xs leading-relaxed text-muted-foreground">{{ t(aiCcSwitchPluginStatusText) }}</p>
+                  </div>
+                </div>
+                <Button type="button" size="sm" variant="outline" class="shrink-0" @click="emit('open-cc-switch-plugin-center')">
+                  <PackageSearch class="mr-1 h-3.5 w-3.5" />
+                  {{ t("toolbar.pluginCenter") }}
+                </Button>
               </div>
 
               <!-- Agent Turn Limit (list mode, global) -->
@@ -10850,7 +11483,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- Config Name Input -->
-                <div class="grid grid-cols-3 items-center gap-3">
+                <div v-if="!aiIsCcSwitchProvider" class="grid grid-cols-3 items-center gap-3">
                   <Label class="text-right text-xs">{{ t("ai.configName") }}</Label>
                   <Input v-model="aiEditConfigName" class="col-span-2 h-8 text-xs" :placeholder="t('ai.configNamePlaceholder')" />
                 </div>
@@ -10863,8 +11496,9 @@ LIMIT 100;</pre>
                       <SelectTrigger inputClass="h-8 text-xs">
                         <SelectValue>
                           <span class="flex items-center gap-2">
-                            <AiProviderLogo :provider="selectedAiProviderPreset.provider" :label="selectedAiProviderPreset.label" :icon-slug="selectedAiProviderPreset.iconSlug" :icon-path="selectedAiProviderPreset.iconPath" />
-                            <span>{{ selectedAiProviderPreset.label }}</span>
+                            <img v-if="aiIsCcSwitchProvider" :src="'/ai-config-import/plugin.png'" alt="" aria-hidden="true" class="h-5 w-5 shrink-0 object-contain" />
+                            <AiProviderLogo v-else :provider="selectedAiProviderPreset.provider" :label="selectedAiProviderPreset.label" :icon-slug="selectedAiProviderPreset.iconSlug" :icon-path="selectedAiProviderPreset.iconPath" />
+                            <span>{{ aiIsCcSwitchProvider ? t("ai.ccSwitchProvider") : selectedAiProviderPreset.label }}</span>
                           </span>
                         </SelectValue>
                       </SelectTrigger>
@@ -10876,6 +11510,12 @@ LIMIT 100;</pre>
                               <span class="flex w-full min-w-0 items-center gap-2">
                                 <AiProviderLogo :provider="provider.provider" :label="provider.label" :icon-slug="provider.iconSlug" :icon-path="provider.iconPath" />
                                 <span class="truncate">{{ provider.label }}</span>
+                              </span>
+                            </SelectItem>
+                            <SelectItem v-if="!isWeb && aiCcSwitchPluginAvailable" :value="CC_SWITCH_PROVIDER_ID">
+                              <span class="flex w-full min-w-0 items-center gap-2">
+                                <img :src="'/ai-config-import/plugin.png'" alt="" aria-hidden="true" class="h-5 w-5 shrink-0 object-contain" />
+                                <span class="truncate">{{ t("ai.ccSwitchProvider") }}</span>
                               </span>
                             </SelectItem>
                           </SelectGroup>
@@ -10894,7 +11534,7 @@ LIMIT 100;</pre>
                     </Select>
                     <div v-if="selectedAiPartnerPreset" class="flex items-center gap-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2">
                       <div class="min-w-0 flex-1">
-                        <p class="whitespace-pre-line text-[11px] leading-4 text-muted-foreground">{{ t(selectedAiPartnerPreset.descriptionKey) }}</p>
+                        <p class="whitespace-pre-line text-[11px] leading-4 text-muted-foreground [&_a]:text-primary [&_a]:underline" @click="handleAiMarkdownLinkClick($event, openExternalUrl)" v-html="selectedAiPartnerDescriptionHtml"></p>
                       </div>
                       <Button type="button" variant="ghost" size="icon" class="h-7 w-7 shrink-0" :title="t('ai.visitPartner')" :aria-label="t('ai.visitPartner')" @click="openExternalUrl(selectedAiPartnerPreset.websiteUrl)">
                         <ExternalLink class="h-3.5 w-3.5" />
@@ -10903,8 +11543,58 @@ LIMIT 100;</pre>
                   </div>
                 </div>
 
+                <div v-if="aiIsCcSwitchProvider && !isWeb && aiCcSwitchPluginAvailable" class="rounded-md border border-primary/20 bg-primary/5 px-3 py-3">
+                  <div class="flex items-start gap-3">
+                    <img :src="'/ai-config-import/plugin.png'" alt="" aria-hidden="true" class="mt-0.5 h-8 w-8 shrink-0 object-contain" />
+                    <div class="min-w-0 space-y-1">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <p class="text-sm font-medium">{{ t("ai.ccSwitchProvider") }}</p>
+                        <Badge variant="outline" class="h-5 px-1.5 text-[10px]">v{{ aiCcSwitchPluginVersion || "—" }}</Badge>
+                      </div>
+                      <p class="text-xs leading-relaxed text-muted-foreground">{{ t("ai.ccSwitchProviderDescription") }}</p>
+                    </div>
+                  </div>
+                  <div class="mt-3 space-y-2 rounded-md border bg-background/70 px-3 py-2.5 text-xs">
+                    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div class="flex min-w-0 items-center gap-2 font-medium">
+                        <Loader2 v-if="aiCcSwitchPluginLoading" class="h-3.5 w-3.5 shrink-0 animate-spin" />
+                        <CheckCircle2 v-else class="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
+                        <span class="truncate">
+                          {{ aiCcSwitchPluginLoading ? t("ai.ccSwitchPluginChecking") : t("ai.ccSwitchPluginReady") }}
+                        </span>
+                      </div>
+                      <Button type="button" size="sm" variant="ghost" class="h-7 shrink-0 px-2 text-xs" :disabled="aiCcSwitchPluginLoading" :title="t('ai.ccSwitchPluginRefresh')" :aria-label="t('ai.ccSwitchPluginRefresh')" @click="refreshCcSwitchPluginAvailability">
+                        <RefreshCw class="mr-1 h-3.5 w-3.5" />
+                        {{ t("ai.ccSwitchPluginRefresh") }}
+                      </Button>
+                    </div>
+                    <div class="space-y-2">
+                      <div class="flex flex-col items-start gap-1.5">
+                        <Button type="button" size="sm" variant="outline" :disabled="aiConfigImporting" @click="aiImportCcSwitchConfigs">
+                          <Loader2 v-if="aiConfigImportingSource === 'cc-switch'" class="mr-1 h-3.5 w-3.5 animate-spin" />
+                          <img v-else :src="'/ai-config-import/cc-switch.png'" alt="" aria-hidden="true" class="mr-1 h-4 w-4 object-contain" />
+                          {{ aiConfigImportingSource === "cc-switch" ? t("ai.ccSwitchImporting") : t("ai.ccSwitchImport") }}
+                        </Button>
+                        <p class="pl-1 text-xs text-muted-foreground">{{ aiImportSourceSummaryText("cc-switch") }}</p>
+                      </div>
+                      <div class="flex flex-col items-start gap-1.5">
+                        <Button type="button" size="sm" variant="outline" :disabled="aiConfigImporting || !aiMagpiePluginAvailable" @click="aiImportMagpieConfigs">
+                          <Loader2 v-if="aiConfigImportingSource === 'magpie'" class="mr-1 h-3.5 w-3.5 animate-spin" />
+                          <img v-else :src="'/ai-config-import/magpie.png'" alt="" aria-hidden="true" class="mr-1 h-4 w-4 object-contain" />
+                          {{ aiConfigImportingSource === "magpie" ? t("ai.magpieImporting") : t("ai.magpieImport") }}
+                        </Button>
+                        <p class="pl-1 text-xs text-muted-foreground">{{ aiImportSourceSummaryText("magpie") }}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- CLI MCP Status -->
-                <div v-if="aiIsCliProvider && !isWeb" class="rounded-md border px-3 py-2.5 text-xs" :class="aiCliMcpNeedsInstall ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300'">
+                <div
+                  v-if="!aiIsCcSwitchProvider && aiIsCliProvider && !isWeb"
+                  class="rounded-md border px-3 py-2.5 text-xs"
+                  :class="aiCliMcpNeedsInstall ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300' : 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300'"
+                >
                   <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div class="min-w-0 space-y-1">
                       <div class="flex min-w-0 items-center gap-2 font-medium">
@@ -10942,7 +11632,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- Authentication -->
-                <div v-if="!aiIsCliProvider && aiSupportsAuthMethod" class="grid grid-cols-3 items-center gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider && aiSupportsAuthMethod" class="grid grid-cols-3 items-center gap-3">
                   <Label class="text-right text-xs">Authentication</Label>
                   <Select v-model="aiEditAuthMethod">
                     <SelectTrigger class="col-span-2" inputClass="h-8 text-xs">
@@ -10956,7 +11646,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- API Key -->
-                <div v-if="!aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
                   <Label class="text-right text-xs">{{ aiCredentialLabel }}</Label>
                   <div class="col-span-2 flex min-w-0 items-center gap-2">
                     <PasswordInput v-model="aiEditApiKey" autocomplete="off" class="min-w-0 flex-1" inputClass="h-8 text-xs" :placeholder="aiCredentialPlaceholder" />
@@ -10968,7 +11658,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- Endpoint -->
-                <div v-if="!aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
                   <Label class="pt-2 text-right text-xs">Endpoint</Label>
                   <div class="col-span-2 space-y-1.5">
                     <Input v-model="aiEditEndpoint" :placeholder="aiEndpointPlaceholder" autocomplete="off" class="h-8 text-xs" />
@@ -10979,7 +11669,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- Custom HTTP headers for API gateways and tenant routing. -->
-                <div v-if="!aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
                   <Label class="pt-2 text-right text-xs">{{ t("ai.customHeaders") }}</Label>
                   <div class="col-span-2 space-y-2">
                     <div class="space-y-1.5">
@@ -11001,7 +11691,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- CLI Path -->
-                <div v-if="aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
+                <div v-if="!aiIsCcSwitchProvider && aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
                   <Label class="pt-2 text-right text-xs">{{ t("ai.cliPath", { provider: aiCliProviderLabel }) }}</Label>
                   <div class="col-span-2 space-y-1.5">
                     <Input v-model="aiEditCliPath" autocomplete="off" class="h-8 text-xs" :placeholder="aiCliCommandName" />
@@ -11020,7 +11710,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- CLI Env -->
-                <div v-if="aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
+                <div v-if="!aiIsCcSwitchProvider && aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
                   <Label class="pt-2 text-right text-xs">{{ t("ai.cliEnv") }}</Label>
                   <div class="col-span-2 space-y-2">
                     <div class="space-y-1.5">
@@ -11046,7 +11736,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- API Style -->
-                <div v-if="aiSupportsApiStyle" class="grid grid-cols-3 items-center gap-3">
+                <div v-if="!aiIsCcSwitchProvider && aiSupportsApiStyle" class="grid grid-cols-3 items-center gap-3">
                   <Label class="text-right text-xs">API</Label>
                   <div class="col-span-2 flex gap-2">
                     <Button
@@ -11084,13 +11774,13 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- Default Model -->
-                <div v-if="!aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
                   <Label class="text-right text-xs">{{ t("ai.defaultModel") }}</Label>
                   <Input v-model="aiEditModel" autocomplete="off" class="col-span-2 h-8 text-xs" :placeholder="t('ai.manualModelPlaceholder')" />
                 </div>
 
                 <!-- Context Window -->
-                <div v-if="!aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
                   <Label class="text-right text-xs">{{ t("ai.contextWindow") }}</Label>
                   <div class="col-span-2">
                     <Input v-model.number="aiEditContextWindow" type="number" min="1000" step="1000" class="h-8 text-xs" :placeholder="t('ai.contextWindowAuto')" />
@@ -11100,7 +11790,7 @@ LIMIT 100;</pre>
                   </div>
                 </div>
                 <!-- Maximum Output Tokens -->
-                <div v-if="!aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-start gap-3">
                   <Label class="text-right text-xs">{{ t("ai.maxOutputTokens") }}</Label>
                   <div class="col-span-2">
                     <Input v-model.number="aiEditMaxOutputTokens" type="number" :min="AI_OUTPUT_TOKENS_MIN" :max="AI_OUTPUT_TOKENS_MAX" step="1000" class="h-8 text-xs" :placeholder="t('ai.maxOutputTokensAuto')" />
@@ -11111,7 +11801,7 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- Proxy -->
-                <div v-if="!aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
                   <Label class="text-right text-xs">{{ t("ai.proxy") }}</Label>
                   <label class="col-span-2 flex items-center gap-2 text-xs text-muted-foreground">
                     <input v-model="aiEditProxyEnabled" type="checkbox" class="h-4 w-4 shrink-0 accent-primary" />
@@ -11120,13 +11810,13 @@ LIMIT 100;</pre>
                 </div>
 
                 <!-- Proxy URL -->
-                <div v-if="!aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
                   <Label class="text-right text-xs">{{ t("ai.proxyUrl") }}</Label>
                   <Input v-model="aiEditProxyUrl" autocomplete="off" class="col-span-2" inputClass="h-8 text-xs" placeholder="socks5://127.0.0.1:7890" :disabled="!aiEditProxyEnabled" />
                 </div>
 
                 <!-- Skip TLS Verify -->
-                <div v-if="aiSupportsSkipTlsVerify" class="grid grid-cols-3 items-start gap-3">
+                <div v-if="!aiIsCcSwitchProvider && aiSupportsSkipTlsVerify" class="grid grid-cols-3 items-start gap-3">
                   <Label class="text-right text-xs">{{ t("ai.sslVerification") }}</Label>
                   <div class="col-span-2">
                     <label class="flex items-center gap-2 text-xs text-muted-foreground">
@@ -11692,7 +12382,7 @@ LIMIT 100;</pre>
                       <TabsList class="settings-mcp-config-tabs h-auto min-h-8 w-full min-w-0 max-w-full justify-start gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain group-data-horizontal/tabs:h-auto">
                         <TabsTrigger value="claude" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">Claude Code</TabsTrigger>
                         <TabsTrigger value="cursor" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">Cursor</TabsTrigger>
-                        <TabsTrigger value="codebuddy" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">CodeBuddy Code</TabsTrigger>
+                        <TabsTrigger value="codebuddy" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">CodeBuddy Code CLI</TabsTrigger>
                         <TabsTrigger value="zcode" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">ZCode</TabsTrigger>
                         <TabsTrigger value="trae" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">TRAE</TabsTrigger>
                         <TabsTrigger value="vscode" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">VS Code</TabsTrigger>
@@ -12244,36 +12934,42 @@ LIMIT 100;</pre>
               <Button variant="outline" @click="closeSettings">{{ t("common.close") }}</Button>
             </template>
             <template v-else>
-              <div class="flex min-w-0 flex-1 items-center gap-2">
-                <Button size="sm" variant="outline" :disabled="aiTesting || !!aiCliValidationError || !!aiHeadersValidationError || (aiRequiresApiKey && !aiEditApiKey?.trim()) || (!aiIsCliProvider && !aiEditEndpoint?.trim())" @click="aiTestConn">
-                  <Loader2 v-if="aiTesting" class="h-3 w-3 animate-spin mr-1" />
-                  {{ t("connection.test") }}
-                </Button>
-                <span v-if="aiTestResult === 'success'" class="text-xs text-green-500 flex items-center gap-1.5">
-                  <span>{{ t("connection.testSuccess") }}</span>
-                  <span v-if="aiTestLatency != null" class="text-green-500/70">{{ aiTestLatency }}ms</span>
-                </span>
-                <span v-else-if="aiTestResult === 'error'" class="flex min-w-0 max-w-lg items-center gap-1.5 text-xs text-destructive">
-                  <span class="min-w-0 select-text leading-4" :title="aiTestErrorDisplay">
-                    <span v-if="aiTestErrorPresentation.summary" class="block font-medium">{{ aiTestErrorPresentation.summary }}</span>
-                    <span class="block truncate text-destructive/80">{{ aiTestErrorPresentation.detail }}</span>
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    class="h-6 w-6 shrink-0 text-destructive/80 hover:text-destructive"
-                    :title="aiTestErrorCopied ? t('ai.copied') : t('ai.copyTestResult')"
-                    :aria-label="aiTestErrorCopied ? t('ai.copied') : t('ai.copyTestResult')"
-                    @click="copyAiTestError"
-                  >
-                    <CheckCircle2 v-if="aiTestErrorCopied" class="h-3.5 w-3.5" />
-                    <Copy v-else class="h-3.5 w-3.5" />
+              <template v-if="aiIsCcSwitchProvider">
+                <div class="flex-1" />
+                <Button variant="outline" @click="aiEnterListMode()">{{ t("common.cancel") }}</Button>
+              </template>
+              <template v-else>
+                <div class="flex min-w-0 flex-1 items-center gap-2">
+                  <Button size="sm" variant="outline" :disabled="aiTesting || !!aiCliValidationError || !!aiHeadersValidationError || (aiRequiresApiKey && !aiEditApiKey?.trim()) || (!aiIsCliProvider && !aiEditEndpoint?.trim())" @click="aiTestConn">
+                    <Loader2 v-if="aiTesting" class="h-3 w-3 animate-spin mr-1" />
+                    {{ t("connection.test") }}
                   </Button>
-                </span>
-              </div>
-              <Button variant="outline" @click="aiEnterListMode()">{{ t("common.cancel") }}</Button>
-              <Button :disabled="!aiEditConfigName.trim() || !!aiCliValidationError" @click="aiSaveConfig">{{ t("settings.apply") }}</Button>
+                  <span v-if="aiTestResult === 'success'" class="text-xs text-green-500 flex items-center gap-1.5">
+                    <span>{{ t("connection.testSuccess") }}</span>
+                    <span v-if="aiTestLatency != null" class="text-green-500/70">{{ aiTestLatency }}ms</span>
+                  </span>
+                  <span v-else-if="aiTestResult === 'error'" class="flex min-w-0 max-w-lg items-center gap-1.5 text-xs text-destructive">
+                    <span class="min-w-0 select-text leading-4" :title="aiTestErrorDisplay">
+                      <span v-if="aiTestErrorPresentation.summary" class="block font-medium">{{ aiTestErrorPresentation.summary }}</span>
+                      <span class="block truncate text-destructive/80">{{ aiTestErrorPresentation.detail }}</span>
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      class="h-6 w-6 shrink-0 text-destructive/80 hover:text-destructive"
+                      :title="aiTestErrorCopied ? t('ai.copied') : t('ai.copyTestResult')"
+                      :aria-label="aiTestErrorCopied ? t('ai.copied') : t('ai.copyTestResult')"
+                      @click="copyAiTestError"
+                    >
+                      <CheckCircle2 v-if="aiTestErrorCopied" class="h-3.5 w-3.5" />
+                      <Copy v-else class="h-3.5 w-3.5" />
+                    </Button>
+                  </span>
+                </div>
+                <Button variant="outline" @click="aiEnterListMode()">{{ t("common.cancel") }}</Button>
+                <Button :disabled="!aiEditConfigName.trim() || !!aiCliValidationError" @click="aiSaveConfig">{{ t("settings.apply") }}</Button>
+              </template>
             </template>
           </DialogFooter>
 
@@ -12543,6 +13239,89 @@ LIMIT 100;</pre>
 
     <!-- AI Config Delete Confirmation -->
     <DangerConfirmDialog v-model:open="aiDeleteConfirmOpen" :title="t('ai.deleteConfigTitle')" :message="t('ai.deleteConfigConfirm')" :confirm-label="t('common.delete')" @confirm="aiConfirmDeleteConfig" />
+    <Dialog :open="aiImportDialogOpen" @update:open="(open) => !open && closeAiImportDialog()">
+      <DialogContent class="max-h-[min(82vh,760px)] sm:max-w-[680px]">
+        <DialogHeader>
+          <DialogTitle>{{ t("ai.aiImportSelectTitle", { source: aiImportMeta?.sourceName ?? "" }) }}</DialogTitle>
+          <p class="text-sm text-muted-foreground">{{ t("ai.aiImportSelectDescription") }}</p>
+          <p class="text-xs text-muted-foreground">{{ t("ai.aiImportSourceContentsNote") }}</p>
+          <p v-if="aiImportMeta?.sourceName === 'Magpie'" class="text-xs text-muted-foreground">{{ t("ai.aiImportMagpieDefaultModelNote") }}</p>
+        </DialogHeader>
+        <div class="flex items-center justify-between gap-3 border-b pb-3">
+          <div class="flex items-center gap-2">
+            <Button type="button" variant="outline" size="sm" :disabled="aiImportRefreshing || aiImportSaving" @click="refreshAiImportSources">
+              <RefreshCw class="mr-1.5 h-3.5 w-3.5" :class="{ 'animate-spin': aiImportRefreshing }" />
+              {{ t("ai.aiImportRefresh") }}
+            </Button>
+            <Button type="button" variant="outline" size="sm" :disabled="aiImportSelectableCount === 0 || aiImportRefreshing || aiImportSaving" @click="aiToggleImportSelectionAll">
+              {{ t(aiImportAllSelected ? "ai.aiImportDeselectAll" : "ai.aiImportSelectAll") }}
+            </Button>
+          </div>
+          <span class="text-xs text-muted-foreground">{{ t("ai.aiImportSelectedCount", { count: aiImportSelectedCount }) }}</span>
+        </div>
+        <div v-if="aiImportDrafts.length === 0 && aiImportSkipped.length === 0" class="py-8 text-center text-sm text-muted-foreground">
+          {{ t("ai.aiImportNoEntries") }}
+        </div>
+        <div v-else class="max-h-[48vh] space-y-2 overflow-y-auto pr-1">
+          <div
+            v-for="draft in aiImportDrafts"
+            :key="draft.config.id"
+            class="flex gap-3 rounded-md border p-3"
+            :class="{
+              'border-emerald-500/40 bg-emerald-500/5': draft.disabledReason === 'alreadyImported',
+              'opacity-60': !draft.selectable && draft.disabledReason !== 'alreadyImported',
+            }"
+          >
+            <CheckCircle2 v-if="draft.disabledReason === 'alreadyImported'" class="mt-0.5 h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400" role="img" :aria-label="t('ai.aiImportAlreadyImported')" />
+            <input v-else v-model="draft.selected" type="checkbox" class="mt-1 h-4 w-4 shrink-0 accent-primary" :disabled="!draft.selectable || aiImportRefreshing || aiImportSaving" :aria-label="t('ai.aiImportSelectConfig', { name: draft.config.name })" />
+            <div class="min-w-0 flex-1 space-y-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="break-all text-sm font-medium">{{ draft.config.name }}</span>
+                <Badge variant="outline" class="h-5 px-1.5 text-[10px]">{{ draft.config.provider }}</Badge>
+                <Badge variant="outline" class="h-5 px-1.5 text-[10px]">{{ draft.config.apiStyle }}</Badge>
+                <Badge v-if="draft.disabledReason === 'alreadyImported'" variant="outline" class="h-5 border-emerald-600/30 bg-emerald-500/10 px-1.5 text-[10px] text-emerald-700 dark:text-emerald-400">
+                  {{ t("ai.aiImportAlreadyImported") }}
+                </Badge>
+              </div>
+              <p v-if="draft.disabledReason" class="text-xs text-muted-foreground">{{ t("ai.aiImportReasonAlreadyImported") }}</p>
+              <div v-if="aiImportSelectableModels(draft).length" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
+                <Label class="text-xs">{{ t("ai.defaultModel") }}</Label>
+                <Select :disabled="!draft.selectable || aiImportRefreshing || aiImportSaving" :model-value="aiImportModelSelectionValue(draft)" @update:model-value="(value) => aiSetImportDefaultModel(draft, String(value))">
+                  <SelectTrigger class="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem :value="AI_IMPORT_NO_DEFAULT_MODEL">{{ t("ai.aiImportNoDefaultModel") }}</SelectItem>
+                    <SelectItem v-for="model in aiImportSelectableModels(draft)" :key="model.value" :value="model.value">
+                      {{ model.label }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <p v-else class="text-xs text-muted-foreground">{{ t("ai.aiImportNoModelsAvailable") }}</p>
+            </div>
+          </div>
+          <div v-for="(skipped, index) in aiImportSkipped" :key="`${skipped.appType}:${skipped.name}:${index}`" class="flex gap-3 rounded-md border p-3 opacity-60">
+            <input type="checkbox" class="mt-1 h-4 w-4 shrink-0 accent-primary" disabled :aria-label="t('ai.aiImportUnsupported')" />
+            <div class="min-w-0 flex-1 space-y-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="break-all text-sm font-medium">{{ skipped.name }}</span>
+                <Badge variant="outline" class="h-5 px-1.5 text-[10px]">{{ skipped.appType }}</Badge>
+                <Badge variant="outline" class="h-5 px-1.5 text-[10px]">{{ t("ai.aiImportUnsupported") }}</Badge>
+              </div>
+              <p class="text-xs text-muted-foreground">{{ aiImportSkippedReason(skipped.reason) }}</p>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" :disabled="aiImportSaving || aiImportRefreshing" @click="closeAiImportDialog">{{ t("common.cancel") }}</Button>
+          <Button type="button" :disabled="aiImportSaving || aiImportRefreshing || aiImportSelectedCount === 0" @click="confirmAiImportSelection">
+            <Loader2 v-if="aiImportSaving" class="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            {{ t("ai.aiImportConfirm", { count: aiImportSelectedCount }) }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     <DangerConfirmDialog
       v-model:open="templateDeleteConfirmOpen"
       :title="t('ai.promptTemplateDeleteTitle')"

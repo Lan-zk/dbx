@@ -124,6 +124,9 @@ const POSTGRES_WIRE_DB_TYPES = new Set<DatabaseType>(["postgres", "redshift", "g
 /** PG-wire families whose JDBC driver accepts the `ssl`/`sslmode` properties. */
 const PG_JDBC_PREFIXES = new Set(["jdbc:postgresql", "jdbc:redshift", "jdbc:gaussdb", "jdbc:opengauss", "jdbc:kingbase8", "jdbc:highgo"]);
 
+/** MySQL-family prefixes that share Connector/J's `?key=value&...` query grammar. */
+const MYSQL_QUERY_JDBC_PREFIXES = new Set(["jdbc:mysql", "jdbc:mariadb", "jdbc:oceanbase"]);
+
 function normalizedDriverProfile(config: ConnectionUrlCopyConfig): string {
   return config.driver_profile?.trim().toLowerCase() ?? "";
 }
@@ -188,21 +191,45 @@ function shouldAppendPort(config: ConnectionUrlCopyConfig): boolean {
  * RFC 3986 component encoding for credentials. `encodeURIComponent` leaves
  * `!'()*` unescaped, so encode those too; only unreserved characters remain
  * literal and every encoded credential can be decoded back byte-for-byte.
+ *
+ * `=` is also kept literal: userinfo and query values split on their first
+ * separator, so an embedded `=` cannot change how the string is read, while
+ * escaping it made copied passwords differ from the stored one for clients
+ * that never percent-decode (#12304).
  */
 function encodeCredential(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(value)
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/%3D/g, "=");
 }
 
-function buildUserInfo(config: ConnectionUrlCopyConfig, includePassword: boolean): string {
+/**
+ * Characters an Oracle `oracle://` credential keeps verbatim: the RFC 3986
+ * unreserved and sub-delim sets, plus `^`.
+ *
+ * Oracle has no URL client, so this string is a DBX interchange format and
+ * Oracle never percent-decodes credentials (the same reason the Oracle JDBC
+ * item below keeps them literal, issue #11612). Emitting `%5E` for `^` made
+ * users read a password that differs from the one they typed (issue #10057
+ * follow-up), while `%`, the userinfo/path delimiters and whitespace must stay
+ * escaped for the copy to import as the same credential.
+ */
+const ORACLE_URL_CREDENTIAL_LITERAL_CHARACTERS = new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=^");
+
+function encodeOracleUrlCredential(value: string): string {
+  return Array.from(value, (character) => (ORACLE_URL_CREDENTIAL_LITERAL_CHARACTERS.has(character) ? character : encodeURIComponent(character))).join("");
+}
+
+function buildUserInfo(config: ConnectionUrlCopyConfig, includePassword: boolean, encode: (value: string) => string = encodeCredential): string {
   const user = effectiveUsername(config);
   const password = config.password ?? "";
   if (includePassword) {
-    if (user && password) return `${encodeCredential(user)}:${encodeCredential(password)}@`;
-    if (user) return `${encodeCredential(user)}@`;
-    if (password) return `:${encodeCredential(password)}@`;
+    if (user && password) return `${encode(user)}:${encode(password)}@`;
+    if (user) return `${encode(user)}@`;
+    if (password) return `:${encode(password)}@`;
     return "";
   }
-  return user ? `${encodeCredential(user)}@` : "";
+  return user ? `${encode(user)}@` : "";
 }
 
 function standardUrlScheme(config: ConnectionUrlCopyConfig): string | null {
@@ -255,7 +282,7 @@ function buildStandardUrl(config: ConnectionUrlCopyConfig, options: ConnectionUr
   if (!host) return null;
 
   const database = effectiveDatabase(config, options);
-  const userInfo = buildUserInfo(config, options.includePassword);
+  const userInfo = buildUserInfo(config, options.includePassword, config.db_type === "oracle" ? encodeOracleUrlCredential : encodeCredential);
   const hostPart = formatHostForUrl(host);
   const portPart = shouldAppendPort(config) ? `:${config.port}` : "";
   const path = database ? `/${encodeURIComponent(database)}` : "";
@@ -415,13 +442,13 @@ function buildSpecialJdbcUrl(config: ConnectionUrlCopyConfig, database: string, 
 function jdbcQuery(config: ConnectionUrlCopyConfig, prefix: string, withCredentials: boolean): string {
   const raw = (config.url_params ?? "").trim().replace(/^[?&]+/, "");
   // Strict encoding is enabled only for verified query-style drivers.
-  const encode = prefix === "jdbc:mysql" || prefix === "jdbc:postgresql" ? encodeCredential : encodeURIComponent;
+  const encode = MYSQL_QUERY_JDBC_PREFIXES.has(prefix) || prefix === "jdbc:postgresql" ? encodeCredential : encodeURIComponent;
   const parts = [...jdbcCredentialParams(config, withCredentials, encode)];
   if (raw) parts.push(raw);
   if (config.ssl) {
     if (PG_JDBC_PREFIXES.has(prefix) && !queryHasParam(raw, ["ssl", "sslmode"])) {
       parts.push("ssl=true");
-    } else if ((prefix === "jdbc:mysql" || prefix === "jdbc:mariadb" || prefix === "jdbc:oceanbase") && !queryHasParam(raw, ["usessl", "sslmode", "requiressl"])) {
+    } else if (MYSQL_QUERY_JDBC_PREFIXES.has(prefix) && !queryHasParam(raw, ["usessl", "sslmode", "requiressl"])) {
       parts.push("sslMode=REQUIRED");
     } else if (prefix === "jdbc:clickhouse" && !queryHasParam(raw, ["ssl", "sslmode", "secure"])) {
       parts.push("ssl=true");

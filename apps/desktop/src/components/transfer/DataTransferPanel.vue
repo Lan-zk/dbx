@@ -28,6 +28,7 @@ import SearchableSelect from "@/components/ui/searchable-select/SearchableSelect
 import ConnectionTreeSelect from "@/components/connection/ConnectionTreeSelect.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { ensureReadOnlyWriteAccess } from "@/lib/database/readOnlyWriteAccess";
+import { DEFAULT_QUERY_TIMEOUT_SECS, MAX_QUERY_TIMEOUT_SECS } from "@/lib/connection/timeoutLimits";
 import { useProductionSafetyStore } from "@/stores/productionSafetyStore";
 import * as api from "@/lib/backend/api";
 import type { TransferContent, TransferObjectKind, TransferTableNameCase } from "@/lib/backend/api";
@@ -106,6 +107,7 @@ const trackedTransferTask = computed(() => {
 });
 
 const store = useConnectionStore();
+const DEFAULT_TRANSFER_OPERATION_TIMEOUT_SECS = 600;
 
 const sqlConnections = computed(() => store.connections.filter((c) => supportsTransfer(transferDatabaseTypeForConnection(c))));
 const sourceConnections = computed(() => {
@@ -227,6 +229,8 @@ const targetTableStrategy = computed<TransferStrategy>({
 const targetTableNameCase = ref<TransferTableNameCase>("preserve");
 const quoteTargetColumnNames = ref(true);
 const batchSize = ref(1000);
+const operationTimeoutMode = ref<"inherit" | "custom">("inherit");
+const operationTimeoutSecs = ref(DEFAULT_TRANSFER_OPERATION_TIMEOUT_SECS);
 const showSqlPreviewConfirm = ref(false);
 // Per-source-table filter: table name -> bare WHERE predicate or full SELECT.
 const tableFilters = ref<Record<string, string>>({});
@@ -354,6 +358,26 @@ function databaseOptionLabel(connectionId: string, option: string): string {
 
 const sourceDatabaseName = computed(() => decodedDatabase(sourceConnectionId.value, sourceDatabase.value));
 const targetDatabaseName = computed(() => decodedDatabase(targetConnectionId.value, targetDatabase.value));
+const operationTimeoutValid = computed(() => operationTimeoutMode.value === "inherit" || (Number.isInteger(operationTimeoutSecs.value) && operationTimeoutSecs.value >= 0 && operationTimeoutSecs.value <= MAX_QUERY_TIMEOUT_SECS));
+
+function connectionQueryTimeoutSecs(connectionId: string): number {
+  const value = store.getConfig(connectionId)?.query_timeout_secs;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : DEFAULT_QUERY_TIMEOUT_SECS;
+}
+
+function formatOperationTimeout(timeoutSecs: number): string {
+  return timeoutSecs === 0 ? t("transfer.operationTimeoutUnlimited") : t("transfer.operationTimeoutSeconds", { seconds: timeoutSecs });
+}
+
+const operationTimeoutHint = computed(() => {
+  if (operationTimeoutMode.value === "custom") {
+    return operationTimeoutSecs.value === 0 ? t("transfer.operationTimeoutCustomUnlimitedHint") : t("transfer.operationTimeoutCustomHint", { seconds: operationTimeoutSecs.value });
+  }
+  return t("transfer.operationTimeoutInheritedHint", {
+    source: formatOperationTimeout(connectionQueryTimeoutSecs(sourceConnectionId.value)),
+    target: formatOperationTimeout(connectionQueryTimeoutSecs(targetConnectionId.value)),
+  });
+});
 
 const canStart = computed(() => {
   const effectiveSourceSchema = sourceSchema.value || sourceDatabaseName.value;
@@ -375,6 +399,7 @@ const canStart = computed(() => {
     (selectedTables.value.size > 0 || Object.values(selectedObjects.value).some((names) => names.size > 0)) &&
     (targetTableStrategy.value !== "rebuild" || !rebuildDisabledReason.value) &&
     (transferContent.value === "structureOnly" || targetTableStrategy.value !== "upsert" || upsertSupported.value) &&
+    operationTimeoutValid.value &&
     !sameSourceAndTarget
   );
 });
@@ -856,6 +881,8 @@ function resetState(cancelTaskLoad = true) {
   targetTableNameCase.value = "preserve";
   quoteTargetColumnNames.value = true;
   batchSize.value = 1000;
+  operationTimeoutMode.value = "inherit";
+  operationTimeoutSecs.value = DEFAULT_TRANSFER_OPERATION_TIMEOUT_SECS;
   tableFilters.value = {};
   filterDialogOpen.value = false;
   filterEditingTable.value = "";
@@ -977,6 +1004,7 @@ async function requestStartTransfer() {
     quoteTargetColumnNames: quoteTargetColumnNames.value,
     ownershipPolicy: "preserve",
     batchSize: batchSize.value,
+    operationTimeoutSecs: operationTimeoutMode.value === "custom" ? operationTimeoutSecs.value : undefined,
     tableFilters: requestedTableFilters(),
     dropTargetConfirmed: false,
   };
@@ -1064,6 +1092,7 @@ function currentConfig(): TransferTaskConfig {
     targetTableNameCase: targetTableNameCase.value,
     quoteTargetColumnNames: quoteTargetColumnNames.value,
     batchSize: batchSize.value,
+    operationTimeoutSecs: operationTimeoutMode.value === "custom" && operationTimeoutValid.value ? operationTimeoutSecs.value : undefined,
     tableFilters: requestedTableFilters(),
     dropTargetConfirmed: false,
   };
@@ -1082,7 +1111,7 @@ function configSnapshot(config: TransferTaskConfig) {
 const formHasContent = computed(() => !!sourceConnectionId.value || !!targetConnectionId.value);
 const isConfigDirty = computed(() => !!activeTaskId.value && configSnapshot(currentConfig()) !== savedConfigSnapshot.value);
 const needsDiscardConfirm = computed(() => isConfigDirty.value || (!activeTaskId.value && formHasContent.value));
-const canSaveConfig = computed(() => !!sourceConnectionId.value && isTransferDatabaseSelected(sourceDatabase.value) && !!targetConnectionId.value && isTransferDatabaseSelected(targetDatabase.value));
+const canSaveConfig = computed(() => !!sourceConnectionId.value && isTransferDatabaseSelected(sourceDatabase.value) && !!targetConnectionId.value && isTransferDatabaseSelected(targetDatabase.value) && operationTimeoutValid.value);
 
 // Invalidate before asynchronous callbacks can publish a preview for an old form,
 // including a task switch whose new values happen to equal the previous task.
@@ -1115,6 +1144,8 @@ async function applyTransferConfig(config: TransferTaskConfig, isConfigLoadStale
   targetTableNameCase.value = config.targetTableNameCase;
   quoteTargetColumnNames.value = config.quoteTargetColumnNames;
   batchSize.value = config.batchSize;
+  operationTimeoutMode.value = config.operationTimeoutSecs === undefined ? "inherit" : "custom";
+  operationTimeoutSecs.value = config.operationTimeoutSecs ?? DEFAULT_TRANSFER_OPERATION_TIMEOUT_SECS;
   pendingSelectedObjectsPrefill.value = Object.keys(config.objects).length > 0 ? JSON.parse(JSON.stringify(config.objects)) : null;
   pendingTableFiltersPrefill.value = config.tableFilters && Object.keys(config.tableFilters).length > 0 ? { ...config.tableFilters } : null;
 
@@ -1733,6 +1764,22 @@ defineExpose({ getCurrentState });
             <div class="flex items-center gap-3">
               <Label class="text-xs shrink-0">{{ t("transfer.batchSize") }}</Label>
               <Input v-model.number="batchSize" type="number" min="100" max="10000" step="100" class="h-7 text-xs w-24" />
+            </div>
+            <div class="space-y-1">
+              <div class="flex items-center gap-3">
+                <Label class="text-xs shrink-0">{{ t("transfer.operationTimeout") }}</Label>
+                <Select v-model="operationTimeoutMode">
+                  <SelectTrigger class="h-7 w-32 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inherit">{{ t("transfer.operationTimeoutInherit") }}</SelectItem>
+                    <SelectItem value="custom">{{ t("transfer.operationTimeoutCustom") }}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Input v-if="operationTimeoutMode === 'custom'" v-model.number="operationTimeoutSecs" type="number" min="0" :max="MAX_QUERY_TIMEOUT_SECS" step="1" class="h-7 text-xs w-24" />
+              </div>
+              <p class="text-xs leading-5 text-muted-foreground">{{ operationTimeoutHint }}</p>
             </div>
           </div>
         </div>

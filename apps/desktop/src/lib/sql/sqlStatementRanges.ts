@@ -328,6 +328,9 @@ const ORACLE_PL_SQL_BLOCK_STARTERS = new Set(["DECLARE", "BEGIN"]);
 // Only PACKAGE (spec), PACKAGE/TYPE BODY, and routine/trigger objects are PL/SQL blocks.
 const ORACLE_PL_SQL_CREATE_OBJECT_TYPES = new Set(["FUNCTION", "PROCEDURE", "TRIGGER", "PACKAGE"]);
 const ORACLE_PL_SQL_TERMINATORS = new Set(["IF", "LOOP", "CASE"]);
+// The main query that follows Oracle's `WITH [FUNCTION|PROCEDURE ... END;]` inline PL/SQL
+// declaration section. Only a top-level `;` once one of these starts is the statement terminator.
+const ORACLE_WITH_FUNCTION_MAIN_QUERY_KEYWORDS = new Set(["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "WITH"]);
 const SAP_HANA_SCRIPT_BLOCK_TERMINATORS = new Set(["IF", "FOR", "WHILE"]);
 
 /**
@@ -1964,11 +1967,10 @@ function isMysqlRoutineDdlStartFromWords(words: readonly string[]): boolean {
  * whole BEGIN/CASE/END nesting from the top on every semicolon while typing).
  *
  * Semantics mirror the non-incremental token walk exactly: `lastWordToken` plays
- * the role of `previousWordToken(tokens, index)` (both reset to null once a
- * semicolon is crossed), and `pendingEndAwaitingSuffix` defers resolving an "END"
- * token's effect on `blockStack` until the following token arrives, which plays
- * the role of `nextWordToken(tokens, index)`'s lookahead without needing to
- * revisit already-processed tokens.
+ * the role of the previous word token (both reset to null once a semicolon is
+ * crossed), and `pendingEndAwaitingSuffix` defers resolving an "END" token's
+ * effect on `blockStack` until the following token arrives, which plays the role
+ * of next-word lookahead without needing to revisit already-processed tokens.
  */
 interface MysqlRoutineBlockCompleteness {
   processedTokenCount: number;
@@ -2160,10 +2162,17 @@ function startsWithOraclePlSqlBlock(sql: string): boolean {
   return startsWithOraclePlSqlBlockWords(oraclePlSqlWords(sql));
 }
 
+/** Whether the statement opens with Oracle's `WITH [FUNCTION|PROCEDURE ...]` inline PL/SQL
+ * declaration section (Oracle 12c `plsql_declarations`, also accepted by DM8 — issue #11275). */
+function isOracleWithFunctionDeclaration(words: readonly string[]): boolean {
+  return words[0] === "WITH" && (words[1] === "FUNCTION" || words[1] === "PROCEDURE");
+}
+
 function startsWithOraclePlSqlBlockWords(words: readonly string[]): boolean {
   const first = words[0];
   if (!first) return false;
   if (ORACLE_PL_SQL_BLOCK_STARTERS.has(first)) return first !== "BEGIN" || words[1] !== "TRANSACTION";
+  if (first === "WITH") return isOracleWithFunctionDeclaration(words);
   if (first !== "CREATE") return false;
 
   const index = skipOraclePlSqlCreateModifiers(words, 1);
@@ -2259,14 +2268,35 @@ function skipOraclePlSqlCreateModifiers(words: readonly string[], startIndex: nu
 }
 
 function startsWithSapHanaScriptBlock(sql: string): boolean {
-  return oraclePlSqlWords(sql)[0] === "DO";
+  const words = oraclePlSqlWords(sql);
+  if (words[0] === "DO") return true;
+  let index = 1;
+  if (words[0] === "CREATE" && words[index] === "OR" && words[index + 1] === "REPLACE") index += 2;
+  if (words[0] !== "CREATE" && words[0] !== "ALTER") return false;
+  if (!(["PROCEDURE", "FUNCTION", "TRIGGER"] as const).includes(words[index] as "PROCEDURE" | "FUNCTION" | "TRIGGER")) return false;
+  // HANA also accepts ALTER PROCEDURE ... RECOMPILE. Require a SQLScript body
+  // before treating it as a block so ordinary metadata ALTER statements still
+  // terminate at their first semicolon.
+  return words.includes("BEGIN");
 }
 
 function sapHanaScriptBlockIsComplete(sql: string): boolean {
   if (!startsWithSapHanaScriptBlock(sql)) return false;
 
+  const lastNewline = sql.lastIndexOf("\n");
+  if (
+    lastNewline >= 0 &&
+    !sql
+      .slice(lastNewline + 1)
+      .trimStart()
+      .toUpperCase()
+      .startsWith("END;")
+  )
+    return false;
+
   const tokens = oraclePlSqlTokens(sql);
-  const stack: string[] = [];
+  let blockDepth = 0;
+  let caseDepth = 0;
   let sawBegin = false;
 
   for (let index = 0; index < tokens.length; index += 1) {
@@ -2274,45 +2304,61 @@ function sapHanaScriptBlockIsComplete(sql: string): boolean {
     if (token.kind !== "word") continue;
 
     if (token.value === "BEGIN") {
-      if (previousWordToken(tokens, index) === "END") continue;
-      stack.push("BLOCK");
+      if (previousAdjacentWord(sql, tokens, index) === "END") continue;
+      blockDepth += 1;
       sawBegin = true;
       continue;
     }
-    if (token.value === "IF" || token.value === "FOR" || token.value === "WHILE" || token.value === "CASE") {
-      if (previousWordToken(tokens, index) !== "END") stack.push(token.value);
+    if (token.value === "CASE") {
+      if (previousAdjacentWord(sql, tokens, index) !== "END") caseDepth += 1;
       continue;
     }
     if (token.value === "END") {
-      const next = nextWordToken(tokens, index);
-      const top = stack[stack.length - 1];
-      const target = SAP_HANA_SCRIPT_BLOCK_TERMINATORS.has(next ?? "") ? next : top === "CASE" ? "CASE" : "BLOCK";
-      if (top === target) stack.pop();
+      const next = nextAdjacentWord(sql, tokens, index);
+      if (SAP_HANA_SCRIPT_BLOCK_TERMINATORS.has(next ?? "")) continue;
+      if (caseDepth > 0) {
+        caseDepth -= 1;
+      } else if (blockDepth > 0) {
+        blockDepth -= 1;
+      }
     }
   }
 
-  return sawBegin && stack.length === 0 && tokens[tokens.length - 1]?.kind === "semicolon";
+  return sawBegin && blockDepth === 0 && caseDepth === 0 && tokens[tokens.length - 1]?.kind === "semicolon";
 }
 
 function oraclePlSqlBlockEnd(sql: string): number | null {
   const tokens = oraclePlSqlTokens(sql);
   const words = oraclePlSqlWordValues(tokens);
   if (!startsWithOraclePlSqlBlockWords(words)) return null;
+  const withFunctionDeclaration = isOracleWithFunctionDeclaration(words);
 
   // Package/type specifications have no BEGIN — only declarations closed by
   // END [name];. Bodies also own an outer END beyond nested routine END pairs.
   const objectKind = oraclePlSqlCreateObjectKind(words);
   const stack: string[] = objectKind === "body" ? ["OBJECT_BODY"] : objectKind === "spec" ? ["OBJECT_SPEC"] : [];
   let sawBegin = false;
+  let inMainQuery = false;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token.kind === "semicolon") {
+      // Inside a `WITH FUNCTION ...` declaration section every top-level `;` — declaration
+      // assignments, nested block ends, and the `END;` closing each declaration — stays part
+      // of the statement. Only the main query's own terminator ends it (#11275).
+      if (withFunctionDeclaration) {
+        if (inMainQuery && stack.length === 0) return token.to;
+        continue;
+      }
       if (stack[stack.length - 1] === "ROUTINE_HEADER") stack.pop();
       const complete = objectKind !== null ? stack.length === 0 : sawBegin && stack.length === 0;
       if (complete) return token.to;
       continue;
     }
     if (token.kind !== "word") continue;
+
+    if (withFunctionDeclaration && stack.length === 0 && index > 0 && ORACLE_WITH_FUNCTION_MAIN_QUERY_KEYWORDS.has(token.value)) {
+      inMainQuery = true;
+    }
 
     if (token.value === "DECLARE") {
       if (stack[stack.length - 1] !== "DECLARATION") stack.push("DECLARATION");
@@ -2329,7 +2375,7 @@ function oraclePlSqlBlockEnd(sql: string): number | null {
     }
     if (token.value === "BEGIN") {
       if (tokens[index - 1]?.kind === "word" && tokens[index - 1]?.value === "TRANSACTION") continue;
-      const previous = previousWordToken(tokens, index);
+      const previous = previousAdjacentWord(sql, tokens, index);
       if (previous === "END") continue;
       sawBegin = true;
       if (stack[stack.length - 1] === "DECLARATION" || stack[stack.length - 1] === "ROUTINE") stack[stack.length - 1] = "BLOCK";
@@ -2337,18 +2383,18 @@ function oraclePlSqlBlockEnd(sql: string): number | null {
       continue;
     }
     if (token.value === "IF") {
-      const previous = previousWordToken(tokens, index);
+      const previous = previousAdjacentWord(sql, tokens, index);
       if (previous !== "END" && previous !== "ELSIF") stack.push("IF");
       continue;
     }
     if (token.value === "LOOP") {
-      if (previousWordToken(tokens, index) !== "END") stack.push("LOOP");
+      if (previousAdjacentWord(sql, tokens, index) !== "END") stack.push("LOOP");
       continue;
     }
     if (token.value === "CASE") {
-      // Both CASE statements and CASE expressions own an END. The CASE token
-      // following END CASE is ignored below, so it cannot start a new scope.
-      if (previousWordToken(tokens, index) !== "END") stack.push("CASE");
+      // Both CASE statements and CASE expressions own an END. Only a source-adjacent
+      // `END CASE` suffix is ignored — `end ), (case` must open a new CASE scope.
+      if (previousAdjacentWord(sql, tokens, index) !== "END") stack.push("CASE");
       continue;
     }
     if (token.value === "END") {
@@ -2359,7 +2405,7 @@ function oraclePlSqlBlockEnd(sql: string): number | null {
         stack.pop();
         continue;
       }
-      const next = nextWordToken(tokens, index);
+      const next = nextAdjacentWord(sql, tokens, index);
       const target = ORACLE_PL_SQL_TERMINATORS.has(next ?? "") ? next : top === "OBJECT_BODY" || top === "OBJECT_SPEC" ? top : "BLOCK";
       if (top === target || (target === "BLOCK" && top === "BLOCK")) stack.pop();
       continue;
@@ -2485,18 +2531,52 @@ function oraclePlSqlTokens(sql: string): OraclePlSqlToken[] {
   return tokens;
 }
 
-function previousWordToken(tokens: Array<{ kind: "word" | "semicolon"; value: string }>, index: number): string | null {
+/** True when `sql[from..to)` is only whitespace or comments (no punctuation / identifiers). */
+function isSourceAdjacentGap(sql: string, from: number, to: number): boolean {
+  let i = from;
+  while (i < to) {
+    const ch = sql[i];
+    const next = sql[i + 1] ?? "";
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      i += 1;
+      continue;
+    }
+    if (ch === "-" && next === "-") {
+      i += 2;
+      while (i < to && sql[i] !== "\n") i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i + 1 < to && !(sql[i] === "*" && sql[i + 1] === "/")) i += 1;
+      i = Math.min(to, i + 2);
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Previous word only when nothing but whitespace/comments sits between it and `tokens[index]`
+ * in the source. Prevents `end ), (case` from looking like PL/SQL `END CASE`.
+ */
+function previousAdjacentWord(sql: string, tokens: readonly OraclePlSqlToken[], index: number): string | null {
   for (let i = index - 1; i >= 0; i -= 1) {
     if (tokens[i].kind === "semicolon") return null;
-    if (tokens[i].kind === "word") return tokens[i].value;
+    if (tokens[i].kind === "word") {
+      return isSourceAdjacentGap(sql, tokens[i].to, tokens[index].from) ? tokens[i].value : null;
+    }
   }
   return null;
 }
 
-function nextWordToken(tokens: Array<{ kind: "word" | "semicolon"; value: string }>, index: number): string | null {
+function nextAdjacentWord(sql: string, tokens: readonly OraclePlSqlToken[], index: number): string | null {
   for (let i = index + 1; i < tokens.length; i += 1) {
     if (tokens[i].kind === "semicolon") return null;
-    if (tokens[i].kind === "word") return tokens[i].value;
+    if (tokens[i].kind === "word") {
+      return isSourceAdjacentGap(sql, tokens[index].to, tokens[i].from) ? tokens[i].value : null;
+    }
   }
   return null;
 }

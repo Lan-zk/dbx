@@ -1,5 +1,6 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 import { TAB_TITLE_SUFFIX_MAX_LENGTH } from "@/lib/tabs/tabPresentation";
 
 const mocks = vi.hoisted(() => ({
@@ -25,7 +26,7 @@ describe("queryStore tab title suffix", () => {
   async function createStoreWithDataTab() {
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();
-    const id = store.createTab("pg-1", "app", "users", "data", "public");
+    const id = store.createTab("pg-1", "app", "scratch", "query");
     return { store, id };
   }
 
@@ -68,10 +69,12 @@ describe("queryStore tab title suffix", () => {
     vi.useFakeTimers();
     const { store, id } = await createStoreWithDataTab();
     // Let the creation-time save settle so only the suffix change is observed.
+    await nextTick();
     await vi.advanceTimersByTimeAsync(400);
     mocks.saveOpenTabsState.mockClear();
 
     store.setTabTitleSuffix(id, "待办");
+    await nextTick();
     await vi.advanceTimersByTimeAsync(400);
 
     expect(mocks.saveOpenTabsState).toHaveBeenCalled();

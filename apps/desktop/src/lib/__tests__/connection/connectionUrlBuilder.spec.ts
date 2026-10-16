@@ -17,7 +17,10 @@ function config(overrides: Partial<ConnectionUrlCopyConfig>): ConnectionUrlCopyC
 }
 
 const ASCII_SYMBOLS = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
-const ENCODED_ASCII_SYMBOLS = "%21%22%23%24%25%26%27%28%29%2A%2B%2C-.%2F%3A%3B%3C%3D%3E%3F%40%5B%5C%5D%5E_%60%7B%7C%7D~";
+// `=` stays literal (issue #12304): userinfo and query values split on their
+// first separator, so escaping it only made copied passwords differ from the
+// stored credential for clients that never percent-decode.
+const ENCODED_ASCII_SYMBOLS = "%21%22%23%24%25%26%27%28%29%2A%2B%2C-.%2F%3A%3B%3C=%3E%3F%40%5B%5C%5D%5E_%60%7B%7C%7D~";
 
 describe("connectionUrlCopyFormats", () => {
   it("lists all formats for a PostgreSQL connection with a stored password", () => {
@@ -84,6 +87,38 @@ describe("buildConnectionUrlCopy standard URL", () => {
     const text = buildConnectionUrlCopy(config({ password: ASCII_SYMBOLS }), "urlWithPassword");
     expect(text).toBe(`postgresql://app_user:${ENCODED_ASCII_SYMBOLS}@db.example.com:5432/appdb`);
     expect(parseConnectionUrl(text ?? "").password).toBe(ASCII_SYMBOLS);
+  });
+
+  it("keeps Oracle URL credentials readable instead of escaping `^` as `%5E`", () => {
+    const oracle = config({ db_type: "oracle", host: "10.89.67.210", port: 1521, username: "GSU_ZXQ", password: "W^j.U.ZUm5Th", database: "optpdb" });
+    const text = buildConnectionUrlCopy(oracle, "urlWithPassword");
+    expect(text).toBe("oracle://GSU_ZXQ:W^j.U.ZUm5Th@10.89.67.210:1521/optpdb");
+    expect(parseConnectionUrl(text ?? "").password).toBe("W^j.U.ZUm5Th");
+  });
+
+  it("still escapes the Oracle URL credentials that would change how the URL is read", () => {
+    const oracle = config({ db_type: "oracle", host: "ora.example.com", port: 1521, username: "app_user", password: "p^ss%40#y@x", database: "ORCLPDB1" });
+    const text = buildConnectionUrlCopy(oracle, "urlWithPassword");
+    expect(text).toBe("oracle://app_user:p^ss%2540%23y%40x@ora.example.com:1521/ORCLPDB1");
+    expect(parseConnectionUrl(text ?? "").password).toBe("p^ss%40#y@x");
+  });
+
+  it("keeps the full percent-encoding for dialects whose URL a driver consumes", () => {
+    expect(buildConnectionUrlCopy(config({ password: "W^j.U" }), "urlWithPassword")).toBe("postgresql://app_user:W%5Ej.U@db.example.com:5432/appdb");
+  });
+
+  it("keeps `=` readable in copied URLs instead of escaping it as %3D", () => {
+    const password = "p=ss=word";
+    const mysql = config({ db_type: "mysql", port: 3306, password });
+    const mysqlUrl = buildConnectionUrlCopy(mysql, "urlWithPassword");
+    expect(mysqlUrl).toBe("mysql://app_user:p=ss=word@db.example.com:3306/appdb");
+    expect(parseConnectionUrl(mysqlUrl ?? "").password).toBe(password);
+
+    const redis = config({ db_type: "redis", port: 6379, username: "", password, database: "0" });
+    expect(buildConnectionUrlCopy(redis, "urlWithPassword")).toBe("redis://:p=ss=word@db.example.com:6379/0");
+
+    const oceanbase = config({ db_type: "mysql", port: 2883, driver_profile: "oceanbase", password });
+    expect(buildConnectionUrlCopy(oceanbase, "urlWithPassword")).toBe("oceanbase://app_user:p=ss=word@db.example.com:2883/appdb");
   });
 
   it("preserves credentials that already look percent-encoded", () => {
@@ -173,6 +208,19 @@ describe("buildConnectionUrlCopy JDBC URL", () => {
     const text = buildConnectionUrlCopy(config({ db_type: "mysql", port: 3306, password }), "jdbcUrlWithCredentials");
     expect(text).toBe("jdbc:mysql://db.example.com:3306/appdb?user=app_user&password=%2525%2540%255E");
     expect(parseConnectionUrl(text ?? "").password).toBe(password);
+  });
+
+  it("keeps `=` readable in MySQL-family JDBC credentials", () => {
+    const password = "p=ss=word";
+    const mysql = config({ db_type: "mysql", port: 3306, password });
+    const mysqlUrl = buildConnectionUrlCopy(mysql, "jdbcUrlWithCredentials");
+    expect(mysqlUrl).toBe("jdbc:mysql://db.example.com:3306/appdb?user=app_user&password=p=ss=word");
+    expect(parseConnectionUrl(mysqlUrl ?? "").password).toBe(password);
+
+    const oceanbase = config({ db_type: "mysql", port: 2883, driver_profile: "oceanbase", password });
+    const oceanbaseUrl = buildConnectionUrlCopy(oceanbase, "jdbcUrlWithCredentials");
+    expect(oceanbaseUrl).toBe("jdbc:oceanbase://db.example.com:2883/appdb?user=app_user&password=p=ss=word");
+    expect(parseConnectionUrl(oceanbaseUrl ?? "").password).toBe(password);
   });
 
   it("keeps Oracle Easy Connect credentials literal instead of URI-encoding them", () => {

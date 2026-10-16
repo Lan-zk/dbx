@@ -509,7 +509,9 @@ export function drawCanvasDataGrid(options: DrawCanvasDataGridOptions): boolean 
                 ? theme.rowNumberActive
                 : rowInSelection
                   ? theme.cellSelected
-                  : theme.rowNumberDefault;
+                  : item.isNew && item.status === "clean"
+                    ? rowBase
+                    : theme.rowNumberDefault;
     ctx.fillStyle = rowNumberFill;
     ctx.fillRect(0, y, rowNumberWidth, CANVAS_DATA_GRID_ROW_HEIGHT);
     // 与 DOM 的 .data-grid-row-number--selected 对齐：选中行号左侧 3px 蓝色条
@@ -534,13 +536,15 @@ export function drawCanvasDataGrid(options: DrawCanvasDataGridOptions): boolean 
     ctx.rect(0, y, rowNumberWidth, CANVAS_DATA_GRID_ROW_HEIGHT);
     ctx.clip();
     ctx.fillText(
-      resolveDataGridRowNumberLabel({
-        displayIndex: item.displayIndex,
-        sourceIndex: item.sourceIndex,
-        isDraft: item.isDraft,
-        sourceRowNumbers: rowNumberMode === "source",
-        pageOffset: infiniteScrollEnabled ? 0 : pageOffset,
-      }),
+      item.isNew && item.status === "clean"
+        ? "*"
+        : resolveDataGridRowNumberLabel({
+            displayIndex: item.displayIndex,
+            sourceIndex: item.sourceIndex,
+            isDraft: item.isDraft,
+            sourceRowNumbers: rowNumberMode === "source",
+            pageOffset: infiniteScrollEnabled ? 0 : pageOffset,
+          }),
       rowNumberTextX,
       textY,
     );
@@ -764,7 +768,8 @@ export function drawCanvasDataGrid(options: DrawCanvasDataGridOptions): boolean 
   // 画冻结列分隔线（与 DOM 模式和列头一致：2px 灰色右边框）
   // DOM 的 border-right 右边缘对齐单元格右边缘，中心偏左 1px；
   // Canvas 的 stroke 以坐标点为中心，需左移 1px 使两者对齐
-  if (frozenColumnCount > 0 && frozenColumnCount < renderedColumnWidths.length) {
+  const frozenSeparatorHeight = Math.min(height, Math.max(0, rowCount * CANVAS_DATA_GRID_ROW_HEIGHT - scrollTop));
+  if (frozenColumnCount > 0 && frozenColumnCount < renderedColumnWidths.length && frozenSeparatorHeight > 0) {
     const frozenWidth = offsets[frozenColumnCount] ?? 0;
     const separatorX = rowNumberWidth + frozenWidth - 1;
     ctx.save();
@@ -772,7 +777,7 @@ export function drawCanvasDataGrid(options: DrawCanvasDataGridOptions): boolean 
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(separatorX, 0);
-    ctx.lineTo(separatorX, height);
+    ctx.lineTo(separatorX, frozenSeparatorHeight);
     ctx.stroke();
     ctx.restore();
   }

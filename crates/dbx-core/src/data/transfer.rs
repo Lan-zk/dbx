@@ -52,6 +52,36 @@ use crate::sql_dialect::{
 
 static CANCELLED: std::sync::LazyLock<RwLock<HashSet<String>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashSet::new()));
+pub const MAX_TRANSFER_OPERATION_TIMEOUT_SECS: u64 = 3600;
+
+tokio::task_local! {
+    static TRANSFER_OPERATION_TIMEOUT_SECS: Option<u64>;
+}
+
+pub fn validate_transfer_operation_timeout(timeout_secs: Option<u64>) -> Result<(), String> {
+    if timeout_secs.is_some_and(|value| value > MAX_TRANSFER_OPERATION_TIMEOUT_SECS) {
+        return Err(format!(
+            "Transfer operation timeout must be between 0 and {MAX_TRANSFER_OPERATION_TIMEOUT_SECS} seconds"
+        ));
+    }
+    Ok(())
+}
+
+pub async fn with_transfer_operation_timeout<T>(
+    timeout_secs: Option<u64>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    TRANSFER_OPERATION_TIMEOUT_SECS.scope(timeout_secs, future).await
+}
+
+fn current_transfer_operation_timeout_secs() -> Option<u64> {
+    TRANSFER_OPERATION_TIMEOUT_SECS.try_with(|timeout_secs| *timeout_secs).ok().flatten()
+}
+
+fn effective_transfer_operation_timeout_secs(connection_timeout_secs: u64) -> u64 {
+    current_transfer_operation_timeout_secs().unwrap_or(connection_timeout_secs)
+}
+
 static OCEANBASE_MYSQL_TABLE_OPTION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:AUTO_INCREMENT_MODE|REPLICA_NUM|USE_BLOOM_FILTER|TABLET_SIZE|PCTFREE)\s*=")
         .expect("valid OceanBase MySQL table option regex")
@@ -224,28 +254,15 @@ pub struct TransferObjectSelection {
     pub names: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferObjectFamily {
-    Mysql,
-    Postgres,
-    Oracle,
-    SqlServer,
-}
+pub use dbx_types::database_manifest::DatabaseTransferObjectFamily as TransferObjectFamily;
+pub use dbx_types::database_manifest::DatabaseTransferSupportLevel as TransferSupportLevel;
 
 pub fn transfer_object_family(db_type: &DatabaseType) -> Option<TransferObjectFamily> {
-    match db_type {
-        DatabaseType::Mysql | DatabaseType::Gbase => Some(TransferObjectFamily::Mysql),
-        DatabaseType::Postgres
-        | DatabaseType::Kingbase
-        | DatabaseType::Gaussdb
-        | DatabaseType::Kwdb
-        | DatabaseType::OpenGauss => Some(TransferObjectFamily::Postgres),
-        DatabaseType::Oracle | DatabaseType::Dameng | DatabaseType::OceanbaseOracle => {
-            Some(TransferObjectFamily::Oracle)
-        }
-        DatabaseType::SqlServer => Some(TransferObjectFamily::SqlServer),
-        _ => None,
-    }
+    dbx_types::database_manifest::transfer_object_family(db_type)
+}
+
+pub fn transfer_support_level(db_type: &DatabaseType) -> Option<TransferSupportLevel> {
+    dbx_types::database_manifest::transfer_support_level(db_type)
 }
 
 pub fn is_same_transfer_family(a: &DatabaseType, b: &DatabaseType) -> bool {
@@ -1045,6 +1062,12 @@ pub fn validate_transfer_database_pair(
     source_db_type: &DatabaseType,
     target_db_type: &DatabaseType,
 ) -> Result<(), String> {
+    if transfer_support_level(source_db_type).is_none() {
+        return Err(format!("{} 暂未声明数据传输兼容级别", source_db_type.as_str()));
+    }
+    if transfer_support_level(target_db_type).is_none() {
+        return Err(format!("{} 暂未声明数据传输兼容级别", target_db_type.as_str()));
+    }
     if !matches!(source_db_type, DatabaseType::Xugu) && !matches!(target_db_type, DatabaseType::Xugu) {
         return Ok(());
     }
@@ -1711,7 +1734,11 @@ pub(crate) fn normalize_integer_literal(
     Some(integer.to_string())
 }
 
-fn is_postgres_numeric_family(data_type: &str) -> bool {
+/// Target types whose stored value is a plain number, so an en-US thousands
+/// separator in the source text is formatting rather than data. Covers the
+/// PostgreSQL/Oracle spellings and the MySQL-family ones (`int`, `tinyint`,
+/// `mediumint`); a type not listed here keeps its literal text.
+fn is_numeric_target_type(data_type: &str) -> bool {
     let normalized = data_type.trim().to_ascii_lowercase();
     let base = normalized.split(['(', ' ']).next().unwrap_or("");
     matches!(
@@ -1720,8 +1747,11 @@ fn is_postgres_numeric_family(data_type: &str) -> bool {
             | "int2"
             | "integer"
             | "int4"
+            | "int"
             | "bigint"
             | "int8"
+            | "tinyint"
+            | "mediumint"
             | "numeric"
             | "decimal"
             | "real"
@@ -1738,12 +1768,13 @@ fn is_postgres_numeric_family(data_type: &str) -> bool {
 /// grouping ("1,23,4", "1,,234") or any non-numeric character returns None so the original
 /// text reaches the database and keeps its existing validation error instead of being
 /// silently coerced. Values without a comma are left untouched.
-pub(crate) fn normalize_thousands_numeric_literal(
-    value: &str,
-    db_type: &DatabaseType,
-    column_type: Option<&str>,
-) -> Option<String> {
-    if !is_postgres_transfer_dialect(db_type) || !column_type.is_some_and(is_postgres_numeric_family) {
+///
+/// Keyed on the target column type rather than the dialect: `123,456` is a formatted
+/// number wherever the column stores a number, and a text column keeps the characters
+/// as written. This started PostgreSQL-only, which left MySQL/TiDB imports inserting
+/// `'123,456'` into a numeric column and failing (#11993).
+pub(crate) fn normalize_thousands_numeric_literal(value: &str, column_type: Option<&str>) -> Option<String> {
+    if !column_type.is_some_and(is_numeric_target_type) {
         return None;
     }
     let trimmed = value.trim();
@@ -2030,7 +2061,10 @@ fn h2_writable_transfer_columns(
         if *mode == TransferMode::Upsert
             && target.is_some_and(|target| is_postgres_generated_always_identity_extra(target.extra.as_deref()))
         {
-            return Err(format!("H2 Upsert cannot assign GENERATED ALWAYS identity column '{}'. Use append/overwrite or change the target column to GENERATED BY DEFAULT.", source.name));
+            return Err(format!(
+                "H2 Upsert cannot assign GENERATED ALWAYS identity column '{}'. Use append/overwrite or change the target column to GENERATED BY DEFAULT.",
+                source.name
+            ));
         }
         columns.push(source.clone());
     }
@@ -2339,7 +2373,7 @@ fn postgres_default_clause(
     ))
 }
 
-fn is_mysql_family_target(target_db: &DatabaseType) -> bool {
+pub(crate) fn is_mysql_family_target(target_db: &DatabaseType) -> bool {
     matches!(
         target_db,
         DatabaseType::Mysql
@@ -2845,6 +2879,50 @@ fn generate_postgres_sequence_sync_sql(columns: &[db::ColumnInfo], table: &str, 
                 "SELECT setval(pg_get_serial_sequence({}, {})::regclass, GREATEST(COALESCE(MAX({quoted_column}::bigint), 0), 1), MAX({quoted_column}::bigint) IS NOT NULL) FROM {full_table}",
                 quote_string_literal(&full_table),
                 quote_string_literal(&column.name)
+            )
+        })
+        .collect()
+}
+
+/// `ALTER TABLE ... MODIFY <column> GENERATED BY DEFAULT AS IDENTITY (START WITH LIMIT VALUE)`
+/// statements for Oracle targets.
+///
+/// Oracle accepts explicit values in a `GENERATED BY DEFAULT AS IDENTITY` column but
+/// does not advance its sequence, so the first auto-generated insert after copying
+/// explicit ids can collide with a copied value. `START WITH LIMIT VALUE` makes Oracle
+/// lock the table and move the sequence past the maximum value in the column.
+///
+/// The filter mirrors the identity emission in
+/// `generate_create_table_ddl_with_column_quoting` (primary key, explicit
+/// auto-increment, integer-like mapped type), so the ALTER only targets a column the
+/// generated DDL created as an identity column.
+fn oracle_identity_reseed_statements(
+    columns: &[db::ColumnInfo],
+    table: &str,
+    schema: &str,
+    source_schema: &str,
+    source_db: &DatabaseType,
+    quote_target_column_names: bool,
+) -> Vec<String> {
+    let full_table = qualified_table(table, schema, &DatabaseType::Oracle, None);
+    columns
+        .iter()
+        .filter(|column| {
+            column.is_primary_key
+                && column_is_auto_increment(column)
+                && type_looks_integer(&postgres_column_type_sql(
+                    column,
+                    source_schema,
+                    schema,
+                    source_db,
+                    &DatabaseType::Oracle,
+                ))
+        })
+        .map(|column| {
+            let quoted_column =
+                transfer_column_identifier(&column.name, &DatabaseType::Oracle, quote_target_column_names);
+            format!(
+                "ALTER TABLE {full_table} MODIFY {quoted_column} GENERATED BY DEFAULT AS IDENTITY (START WITH LIMIT VALUE)"
             )
         })
         .collect()
@@ -7722,7 +7800,7 @@ async fn transfer_pool_context(
         config.map(|config| config.id.clone()),
         database_from_pool_key(pool_key).map(str::to_string),
         config.map(|config| config.db_type),
-        config.map(|config| config.effective_query_timeout_secs()),
+        config.map(|config| effective_transfer_operation_timeout_secs(config.effective_query_timeout_secs())),
     )
 }
 
@@ -10763,8 +10841,8 @@ async fn fetch_agent_transfer_batch(
     let query_timeout_secs = if cursor.started {
         0
     } else {
-        let configs = state.configs.read().await;
-        configs.get(&request.source_connection_id).map(|config| config.query_timeout_secs).unwrap_or(0)
+        let (_, _, _, timeout_secs) = transfer_pool_context(state, pool_key).await;
+        timeout_secs.unwrap_or(0)
     };
     let pool_handle = state.pool_handle(pool_key).await;
     let Some(PoolKind::Agent(client)) = pool_handle.as_ref() else {
@@ -12249,6 +12327,30 @@ where
         }
     }
 
+    // Oracle accepts explicit ids in a `GENERATED BY DEFAULT AS IDENTITY` column but
+    // does not advance the sequence, so move it past the copied values. Only for
+    // tables this run created — `START WITH LIMIT VALUE` requires the identity column
+    // the generated DDL just created, and a preexisting target may not have one.
+    // OceanBase Oracle and DM8 stay out until their behavior is verified.
+    if *target_db_type == DatabaseType::Oracle
+        && request.create_table
+        && !target_table_preexisting
+        && total_transferred > 0
+    {
+        for statement in oracle_identity_reseed_statements(
+            &columns,
+            &target_table,
+            &request.target_schema,
+            &request.source_schema,
+            source_db_type,
+            request.quote_target_column_names,
+        ) {
+            execute_on_pool(state, target_pool_key, &statement)
+                .await
+                .map_err(|e| format!("Failed to reseed the Oracle identity column for {target_table}: {e}"))?;
+        }
+    }
+
     if should_restore_postgres_table_schema {
         restore_postgres_table_schema_objects(
             state,
@@ -12644,28 +12746,32 @@ where
     let request_target_catalog = request.target_catalog.clone();
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(TRANSFER_PROGRESS_CHANNEL_CAPACITY);
     let (source_count_tx, mut source_count_rx) = tokio::sync::mpsc::channel(1);
+    let operation_timeout_secs = current_transfer_operation_timeout_secs();
 
     let mut task = tokio::spawn(async move {
         let mut task_pending_fk_alters = Vec::new();
-        let result = transfer_table_inner(
-            &state,
-            &request,
-            &table,
-            table_index,
-            &source_db_type,
-            &target_db_type,
-            &source_pool_key,
-            &target_pool_key,
-            &known_foreign_keys,
-            &mut task_pending_fk_alters,
-            preexisting_backup_names.as_ref(),
-            target_cleared,
-            move |progress| {
-                try_send_transfer_progress(&progress_tx, progress);
-            },
-            move |source_count| {
-                let _ = source_count_tx.try_send(source_count);
-            },
+        let result = with_transfer_operation_timeout(
+            operation_timeout_secs,
+            transfer_table_inner(
+                &state,
+                &request,
+                &table,
+                table_index,
+                &source_db_type,
+                &target_db_type,
+                &source_pool_key,
+                &target_pool_key,
+                &known_foreign_keys,
+                &mut task_pending_fk_alters,
+                preexisting_backup_names.as_ref(),
+                target_cleared,
+                move |progress| {
+                    try_send_transfer_progress(&progress_tx, progress);
+                },
+                move |source_count| {
+                    let _ = source_count_tx.try_send(source_count);
+                },
+            ),
         )
         .await;
         (result, task_pending_fk_alters)
@@ -13532,6 +13638,28 @@ for line in sys.stdin:
         assert!(!is_transfer_query_timeout("Connection timed out while loading tables"));
     }
 
+    #[test]
+    fn transfer_operation_timeout_validation_accepts_inherit_custom_and_unlimited() {
+        assert!(validate_transfer_operation_timeout(None).is_ok());
+        assert!(validate_transfer_operation_timeout(Some(0)).is_ok());
+        assert!(validate_transfer_operation_timeout(Some(MAX_TRANSFER_OPERATION_TIMEOUT_SECS)).is_ok());
+        assert!(validate_transfer_operation_timeout(Some(MAX_TRANSFER_OPERATION_TIMEOUT_SECS + 1)).is_err());
+    }
+
+    #[tokio::test]
+    async fn transfer_operation_timeout_override_is_task_scoped() {
+        assert_eq!(effective_transfer_operation_timeout_secs(60), 60);
+        assert_eq!(
+            with_transfer_operation_timeout(Some(600), async { effective_transfer_operation_timeout_secs(60) }).await,
+            600
+        );
+        assert_eq!(
+            with_transfer_operation_timeout(Some(0), async { effective_transfer_operation_timeout_secs(60) }).await,
+            0
+        );
+        assert_eq!(effective_transfer_operation_timeout_secs(60), 60);
+    }
+
     fn jdbc_transfer_config(connection_string: &str, driver_class: &str, profile: &str) -> ConnectionConfig {
         ConnectionConfig {
             oracle_oci_nls_lang: None,
@@ -13599,6 +13727,7 @@ for line in sys.stdin:
             read_only: false,
             is_production: false,
             production_databases: vec![],
+            production_badge_scope: None,
             database_info: None,
             docs_notes_path: None,
         }
@@ -13715,7 +13844,14 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
         let columns = vec!["ID".into(), "PART".into(), "NAME".into()];
         let rows = vec![vec![json!(1), json!(1), json!("o'clock")], vec![json!(1), json!(2), json!(null)]];
         assert_eq!(
-            generate_upsert(&columns, &rows, "ITEMS", "TransferTarget", &DatabaseType::H2, &["ID".into(), "PART".into()]),
+            generate_upsert(
+                &columns,
+                &rows,
+                "ITEMS",
+                "TransferTarget",
+                &DatabaseType::H2,
+                &["ID".into(), "PART".into()]
+            ),
             "MERGE INTO \"TransferTarget\".\"ITEMS\" (\"ID\", \"PART\", \"NAME\") KEY (\"ID\", \"PART\") VALUES\n(1, 1, 'o''clock'),\n(1, 2, NULL)"
         );
         assert_eq!(
@@ -14289,6 +14425,14 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
                 .contains("追加或覆盖"));
             let rebuild = TransferRequest { drop_target_before_create: true, ..request.clone() };
             assert!(validate_transfer_database_pair(&rebuild, &DatabaseType::Xugu, &DatabaseType::Xugu).is_err());
+        }
+
+        #[test]
+        fn transfer_pair_requires_declared_endpoint_compatibility() {
+            let request = base_request();
+            let error = validate_transfer_database_pair(&request, &DatabaseType::Gbase, &DatabaseType::Mysql)
+                .expect_err("GBase data transfer is disabled in the shared manifest");
+            assert!(error.contains("gbase"));
         }
 
         #[test]
@@ -14870,10 +15014,14 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
 
         #[test]
         fn deferred_mysql_foreign_keys_follow_target_ddl_capability() {
-            for target in [DatabaseType::Mysql, DatabaseType::StarRocks, DatabaseType::Goldendb, DatabaseType::Sundb] {
+            for target in [DatabaseType::Mysql, DatabaseType::Goldendb, DatabaseType::Sundb] {
                 assert!(supports_deferred_mysql_foreign_keys(&target), "{target:?}");
             }
-            assert!(!supports_deferred_mysql_foreign_keys(&DatabaseType::Doris));
+            // StarRocks uses foreign_key_constraints table properties, not MySQL-style
+            // ADD CONSTRAINT ... FOREIGN KEY statements generated by this transfer path.
+            for target in [DatabaseType::StarRocks, DatabaseType::Doris] {
+                assert!(!supports_deferred_mysql_foreign_keys(&target), "{target:?}");
+            }
         }
 
         #[test]
@@ -17376,7 +17524,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
         for source_schema in ["sales#old", "o'connor", "we]ird", "other[src", "we--ird", "we/*ird", "雪#'[]"] {
             let source_identifier = format!("[{}]", source_schema.replace(']', "]]"));
             let source_literal = format!("N'{}'", source_schema.replace('\'', "''"));
-            let ddl = format!("CREATE TABLE {source_identifier}.[t] ([id] int);\nEXEC sys.sp_addextendedproperty @name=N'MS_Description', @value={source_literal}, @level0type=N'SCHEMA', @level0name={source_literal}, @level1type=N'TABLE', @level1name=N't';");
+            let ddl = format!(
+                "CREATE TABLE {source_identifier}.[t] ([id] int);\nEXEC sys.sp_addextendedproperty @name=N'MS_Description', @value={source_literal}, @level0type=N'SCHEMA', @level0name={source_literal}, @level1type=N'TABLE', @level1name=N't';"
+            );
             let rewritten = rewrite_sqlserver_bracketed_schema_qualifier(&ddl, source_schema, "dst");
             let expected = ddl
                 .replace(&format!("CREATE TABLE {source_identifier}."), "CREATE TABLE [dst].")
@@ -18677,6 +18827,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
     #[test]
     fn postgres_generates_index_and_foreign_key_sql() {
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "users_name_idx".to_string(),
             columns: vec!["lower(name)".to_string()],
             is_unique: false,
@@ -18732,6 +18885,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
     #[test]
     fn postgres_index_ddl_includes_opclass_for_gin_trigram() {
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "users_name_trgm_idx".to_string(),
             columns: vec!["name".to_string()],
             is_unique: false,
@@ -18760,6 +18916,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
         // (`syntax error at or near "NOT"`), so the transfer must fall back to the
         // plain form there (issue #8853).
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "users_name_idx".to_string(),
             columns: vec!["name".to_string(), "status".to_string()],
             is_unique: false,
@@ -18795,6 +18954,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
     #[test]
     fn postgres_index_ddl_no_opclass_when_all_default() {
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "users_name_idx".to_string(),
             columns: vec!["name".to_string(), "status".to_string()],
             is_unique: false,
@@ -18826,6 +18988,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
         // `indclass` into `column_opclasses`, so transfer DDL must append it to an
         // expression key just like a real column.
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "users_lower_email_idx".to_string(),
             columns: vec!["lower(email)".to_string()],
             is_unique: false,
@@ -18852,6 +19017,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
     #[test]
     fn postgres_index_ddl_mixed_opclass_and_default() {
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "users_name_status_idx".to_string(),
             columns: vec!["name".to_string(), "status".to_string()],
             is_unique: false,
@@ -18877,6 +19045,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
     #[test]
     fn postgres_index_ddl_preserves_per_key_ordering_and_include_columns() {
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "event_order_idx".to_string(),
             columns: vec![
                 "created_at".to_string(),
@@ -18907,6 +19078,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
     #[test]
     fn postgres_index_ddl_ignores_access_method_options_for_non_btree_indexes() {
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "events_payload_idx".to_string(),
             columns: vec!["payload".to_string()],
             is_unique: false,
@@ -18933,6 +19107,9 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
     #[test]
     fn postgres_index_ddl_empty_column_opclasses_vec_falls_back_to_no_opclass() {
         let indexes = vec![db::IndexInfo {
+            key_directions: Vec::new(),
+            visibility: None,
+            key_metadata_complete: false,
             name: "users_name_idx".to_string(),
             columns: vec!["name".to_string()],
             is_unique: false,
@@ -19011,6 +19188,31 @@ PARTITION p_old VALUES LESS THAN (TO_DAYS('2026-01-01')))";
             vec![
                 "SELECT setval(pg_get_serial_sequence('\"public\".\"users\"', 'id')::regclass, GREATEST(COALESCE(MAX(\"id\"::bigint), 0), 1), MAX(\"id\"::bigint) IS NOT NULL) FROM \"public\".\"users\"".to_string(),
                 "SELECT setval(pg_get_serial_sequence('\"public\".\"users\"', 'identity_id')::regclass, GREATEST(COALESCE(MAX(\"identity_id\"::bigint), 0), 1), MAX(\"identity_id\"::bigint) IS NOT NULL) FROM \"public\".\"users\"".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn oracle_identity_reseed_targets_generated_identity_columns() {
+        let columns = vec![
+            db::ColumnInfo {
+                is_primary_key: true,
+                extra: Some("auto_increment".to_string()),
+                ..test_column("id", "int")
+            },
+            // Not a key on the source: the generated DDL keeps it a plain column.
+            db::ColumnInfo { extra: Some("auto_increment".to_string()), ..test_column("ticket", "int") },
+            // Plain integer primary key without an explicit auto-increment stays plain.
+            db::ColumnInfo { is_primary_key: true, ..test_column("tenant", "int") },
+        ];
+
+        let statements =
+            oracle_identity_reseed_statements(&columns, "users", "SALES", "source", &DatabaseType::Mysql, true);
+
+        assert_eq!(
+            statements,
+            vec![
+                "ALTER TABLE \"SALES\".\"users\" MODIFY \"id\" GENERATED BY DEFAULT AS IDENTITY (START WITH LIMIT VALUE)".to_string()
             ]
         );
     }
@@ -20590,7 +20792,10 @@ SELECT 1 FROM dual"#
             "target_db",
             true,
         );
-        assert_eq!(sql, "INSERT INTO `target_db`.`events` (`id`, `numbers`, `tags`) SELECT `id`, `numbers`, `tags` FROM `source_db`.`events`");
+        assert_eq!(
+            sql,
+            "INSERT INTO `target_db`.`events` (`id`, `numbers`, `tags`) SELECT `id`, `numbers`, `tags` FROM `source_db`.`events`"
+        );
     }
 
     #[test]
@@ -20749,6 +20954,7 @@ SELECT 1 FROM dual"#
             read_only: false,
             is_production: false,
             production_databases: vec![],
+            production_badge_scope: None,
             database_info: None,
         };
         let mut gbase_jdbc = config.clone();
