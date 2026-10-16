@@ -85,11 +85,6 @@ function mountComponent(component: unknown, props: Record<string, unknown>) {
   return app;
 }
 
-function exportButtonFor(): HTMLButtonElement | undefined {
-  const label = i18n.global.t("databaseExport.export");
-  return [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes(label));
-}
-
 function exportTabSnapshot(exportId: string | null): DatabaseExportTabState {
   return {
     config: { connectionId: "conn-1", database: "shop", schema: "public" },

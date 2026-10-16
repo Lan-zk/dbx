@@ -46,15 +46,6 @@ vi.mock("@/lib/backend/api", () => ({
   rollbackManualTransaction: mocks.rollbackManualTransaction,
 }));
 
-function installLocalStorage() {
-  const data = new Map<string, string>();
-  vi.stubGlobal("localStorage", {
-    getItem: vi.fn((key: string) => data.get(key) ?? null),
-    setItem: vi.fn((key: string, value: string) => data.set(key, value)),
-    removeItem: vi.fn((key: string) => data.delete(key)),
-  });
-}
-
 function tabSnapshot() {
   return {
     config: {

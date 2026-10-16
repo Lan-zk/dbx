@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { createApp, defineComponent, h, nextTick, type App } from "vue";
+import { createApp, defineComponent, h, type App } from "vue";
 import { createPinia } from "pinia";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -63,13 +63,6 @@ function docsSnapshot(): DatabaseDocsTabState {
 
 const mountedApps: App[] = [];
 const emitted: Record<string, unknown[]> = {};
-
-async function flushAsyncSetup() {
-  for (let index = 0; index < 10; index += 1) {
-    await nextTick();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-}
 
 function mountTabPanel() {
   const container = document.createElement("div");

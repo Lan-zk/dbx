@@ -100,13 +100,6 @@ function mountTabPanel(conversionBlocked = false) {
   return app;
 }
 
-function convertButton(): HTMLButtonElement {
-  const label = i18n.global.t("workspace.convertToDialog");
-  const button = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes(label));
-  if (!button) throw new Error(`Missing convert-to-dialog button (${label})`);
-  return button;
-}
-
 afterEach(() => {
   for (const app of mountedApps.splice(0)) app.unmount();
   document.body.textContent = "";

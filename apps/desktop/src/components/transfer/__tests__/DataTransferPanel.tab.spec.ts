@@ -151,12 +151,6 @@ function mountTabPanel(conversionBlocked = false) {
   return app;
 }
 
-function buttonFor(text: string): HTMLButtonElement {
-  const button = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes(text));
-  if (!button) throw new Error(`Missing button (${text})`);
-  return button;
-}
-
 afterEach(() => {
   for (const app of mountedApps.splice(0)) app.unmount();
   document.body.textContent = "";
