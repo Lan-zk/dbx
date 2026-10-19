@@ -66,7 +66,7 @@ fn oracle_family_columns_sql(schema: Option<&str>, database: &str) -> String {
          LEFT JOIN ( \
          SELECT cc.OWNER, cc.TABLE_NAME, cc.COLUMN_NAME \
          FROM ALL_CONSTRAINTS cn \
-         JOIN ALL_CONS_COLUMNS cc ON cc.OWNER = cn.OWNER AND cc.TABLE_NAME = cc.TABLE_NAME AND cc.CONSTRAINT_NAME = cn.CONSTRAINT_NAME \
+         JOIN ALL_CONS_COLUMNS cc ON cc.OWNER = cn.OWNER AND cc.TABLE_NAME = cn.TABLE_NAME AND cc.CONSTRAINT_NAME = cn.CONSTRAINT_NAME \
          WHERE cn.CONSTRAINT_TYPE = 'P' ) pc \
          ON pc.OWNER = c.OWNER AND pc.TABLE_NAME = c.TABLE_NAME AND pc.COLUMN_NAME = c.COLUMN_NAME \
          WHERE c.OWNER = {owner} \

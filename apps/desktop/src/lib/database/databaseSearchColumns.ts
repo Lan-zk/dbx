@@ -44,7 +44,7 @@ export async function fetchDatabaseSearchColumns(options: {
   database: string;
   schema?: string;
   buildSql?: typeof api.buildDatabaseSearchColumnsSql;
-  executeQuery: (sql: string, executionId: string) => Promise<{ columns: string[]; rows: unknown[][] }>;
+  executeQuery: (sql: string, executionId: string) => Promise<{ columns: string[]; rows: unknown[][]; truncated?: boolean }>;
   executionId: string;
 }): Promise<SearchColumnsByTable> {
   const map: SearchColumnsByTable = new Map();
@@ -60,6 +60,12 @@ export async function fetchDatabaseSearchColumns(options: {
     if (!built?.sql) return map;
 
     const result = await options.executeQuery(built.sql, options.executionId);
+    // The catalog query rides the backend's default row cap (10k). A truncation
+    // can land mid-table, and a table seen with only part of its columns would
+    // make the probe miss keywords in the dropped columns — silently skipping
+    // that table. Drop the whole catalog instead: an empty map sends every
+    // table down the per-table getColumns fallback, which is always complete.
+    if (result.truncated) return map;
     const headerIndex = new Map<string, number>();
     result.columns.forEach((name, index) => headerIndex.set(name.toLowerCase(), index));
     const tableIndex = headerIndex.get("table_name");

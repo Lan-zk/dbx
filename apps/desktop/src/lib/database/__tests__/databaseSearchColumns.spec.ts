@@ -75,6 +75,28 @@ describe("databaseSearchColumns", () => {
     expect(executeQuery).not.toHaveBeenCalled();
   });
 
+  it("returns empty map when the catalog result is truncated so callers fall back per-table", async () => {
+    vi.spyOn(api, "buildDatabaseSearchColumnsSql").mockResolvedValue({ sql: "SELECT 1" });
+    const executeQuery = vi.fn().mockResolvedValue({
+      columns: ["TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "IS_PRIMARY_KEY"],
+      rows: [
+        ["USERS", "ID", "NUMBER", 1],
+        ["USERS", "EMAIL", "VARCHAR2", 0],
+      ],
+      truncated: true,
+    });
+
+    const map = await fetchDatabaseSearchColumns({
+      databaseType: "dameng",
+      database: "app",
+      schema: "DLWEB",
+      executeQuery,
+      executionId: "exec-1",
+    });
+
+    expect(map.size).toBe(0);
+  });
+
   it("returns empty map when the catalog query fails", async () => {
     vi.spyOn(api, "buildDatabaseSearchColumnsSql").mockResolvedValue({ sql: "SELECT 1" });
     const executeQuery = vi.fn().mockRejectedValue(new Error("permission denied"));
